@@ -1,0 +1,13 @@
+localServer:
+  id: 3
+  port: 10003
+
+remoteServers:
+
+  - host: localhost
+    port: 10001
+    id: 1
+
+  - host: localhost
+    port: 10002
+    id: 2

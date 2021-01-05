@@ -1,50 +1,45 @@
 package dkvs.server;
 
+import dkvs.shared.*;
+
 import spullara.nio.channels.FutureSocketChannel;
 
 import java.nio.ByteBuffer;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
 public class ClientConnection {
 
-    public static void read(FutureSocketChannel client
-            , State state
-            , ByteBuffer buf) {
-        FutureSocketChannelReader.readLine(client, buf).thenAccept(message -> {
+    private final Network network;
+
+    public ClientConnection(FutureSocketChannel socketChannel, ByteBuffer byteBuffer) {
+        this.network = new Network(Objects.requireNonNull(socketChannel),  Objects.requireNonNull(byteBuffer));
+    }
+
+    public void read() {
+        network.receive().thenAccept(message -> {
             if(message == null){
-                state.clients.remove(client);
+                // Close the connection
+                network.close();
                 System.out.println("Connection closed");
                 return;
             }
-            System.out.println("Received : " + message);
-            state.messages.addMessage(message);
-            ClientConnection.handleWrites(state);
-            ClientConnection.read(client, state, buf);
+            System.out.println("Received : " + message.getType());
+
+            // Keep reading for client input
+            this.read();
         });
     }
 
-    public static void handleWrites(State state){
-        int id = state.messages.currentId();
-        Client client;
-        while((client = state.clients.handle(id)) != null) {
-            write(client, state);
-        }
-    }
 
-    public static void write(Client client, State state){
-        String message = state.messages.getNextMessage(client.messageId);
-        if(message == null){
-            state.clients.handled(client);
-            return;
-        }
+    public void write(){
 
-        CompletableFuture<Void> writter = FutureSocketChannelWriter.write(client.socket, message);
+        CompletableFuture<Void> writer = network.send(client.socket, message);
 
         writter.thenAccept(vd -> {
-            //System.out.println("Wrote " + message + " bytes");
+            System.out.println("Wrote " + message + " bytes");
             client.messageId++;
-            write(client, state);
+            write(client);
         });
     }
-
 }

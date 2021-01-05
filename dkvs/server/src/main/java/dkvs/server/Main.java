@@ -1,15 +1,6 @@
 package dkvs.server;
 
-import spullara.nio.channels.FutureServerSocketChannel;
-
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
-import java.io.PrintWriter;
-import java.net.InetSocketAddress;
-import java.nio.channels.AsynchronousChannelGroup;
-
-import static java.util.concurrent.Executors.defaultThreadFactory;
+import java.nio.file.Paths;
 
 public class Main {
 
@@ -18,34 +9,18 @@ public class Main {
      * @param args Required to provide the args[0] that represents the path to the configuration for the server file.
      * @throws Exception Exception throw when creating BufferedReader or when reading line.
      */
-    public static void main(String[] args) throws Exception{
-        try(
-            BufferedReader in = new BufferedReader(new InputStreamReader(System.in));
-            PrintWriter out = new PrintWriter(new OutputStreamWriter(System.out));
-        ){
-            // If the user didn't provided the required file path, or provided more than one.
-            if (args.length != 1){
-                out.println("Required to provide config file path.\nUsage: dkvs-server <config-file-path>");
-                System.exit(2);
-            }
-
-            // Parse the configuration file
-            //ServerConfig config = ServerConfig.parseYamlFile(Path.of(args[0]));
-
-            State state = new State();
-            AsynchronousChannelGroup g =
-                    AsynchronousChannelGroup.withFixedThreadPool(1, defaultThreadFactory());
-
-            FutureServerSocketChannel server =
-                    new FutureServerSocketChannel();
-            server.bind(new InetSocketAddress(12345));
-
-            Connection.acceptNew(server, state);
-
+    public static void main(String[] args) throws Exception {
+        // If the user didn't provided the required file path, or provided more than one.
+        if (args.length != 1){
+            System.out.println("Required to provide config file path.");
+            System.exit(2);
         }
 
-        //in.readLine();
-        //out.println(2);
-        //out.flush();
+        // Parse the configuration file (default path: ../configs/server-1.yaml)
+        ServerConfig config = ServerConfig.parseServerConfigFileYaml(Paths.get(args[0]));
+
+        // Start Server
+        Server server = new Server(config);
+        server.start();
     }
 }
