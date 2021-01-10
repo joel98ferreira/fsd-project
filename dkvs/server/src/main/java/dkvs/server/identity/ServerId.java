@@ -1,11 +1,12 @@
 package dkvs.server.identity;
 
+import java.io.Serializable;
 import java.util.Objects;
 
 /**
  * Class that uses an integer to be a unique representation of a Server.
  */
-public class ServerId implements Comparable<ServerId> {
+public class ServerId implements Comparable<ServerId>, Serializable {
 
     private final int value;
 
@@ -33,5 +34,10 @@ public class ServerId implements Comparable<ServerId> {
     @Override
     public int compareTo(ServerId other) {
         return Integer.compare(this.getValue(), other.getValue());
+    }
+
+    @Override
+    public String toString() {
+        return "Server " + value;
     }
 }

@@ -5,11 +5,19 @@ import spullara.nio.channels.FutureServerSocketChannel;
 import spullara.nio.channels.FutureSocketChannel;
 
 import java.nio.ByteBuffer;
+import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 public class Connection {
 
-    public static void acceptNew(ServerAddress address, FutureServerSocketChannel server) {
+    private final RequestHandler requestHandler;
+
+    public Connection(RequestHandler requestHandler) {
+        this.requestHandler = Objects.requireNonNull(requestHandler);
+    }
+
+    public void acceptNew(ServerAddress address, FutureServerSocketChannel server) {
 
         System.out.println("> Server is listening for connections at " + address.getPort());
         CompletableFuture<FutureSocketChannel> futureClient = server.accept();
@@ -19,11 +27,12 @@ public class Connection {
 
             ByteBuffer buf = ByteBuffer.allocate(1024);
 
-            ClientConnection con = new ClientConnection(client, buf);
+            ClientConnection con = new ClientConnection(UUID.randomUUID().toString(), client, buf, requestHandler);
 
             // Start receiving from client input
             con.read();
-            Connection.acceptNew(address, server);
+            acceptNew(address, server);
         });
     }
+
 }

@@ -1,8 +1,5 @@
 package dkvs.server;
 
-import dkvs.server.identity.ServerAddress;
-import dkvs.server.identity.ServerId;
-
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
@@ -10,7 +7,7 @@ import java.util.Map;
 public class KeyValueStore {
 
     // Maps all the keys to values inserted by the client on this server
-    private Map<Long, byte[]> keyVal;
+    private final Map<Long, byte[]> keyVal;
 
     public KeyValueStore() {
         this.keyVal = new HashMap<>();
@@ -42,5 +39,4 @@ public class KeyValueStore {
             }
         }
     }
-
 }

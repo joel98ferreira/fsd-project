@@ -16,8 +16,6 @@ public class Connection {
 
         socket.connect(address).thenAccept(c -> {
 
-            System.out.println("> Connected to server " + address.toString() + "!");
-
             // Allocate a byte buffer
             ByteBuffer byteBuffer = ByteBuffer.allocate(1024);
 

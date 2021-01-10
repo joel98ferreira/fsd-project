@@ -5,7 +5,6 @@ import spullara.nio.channels.FutureSocketChannel;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
@@ -62,8 +61,10 @@ public class Network {
 
     public CompletableFuture<Void> send(Message message) throws IOException {
 
+        // Serialize the request
+        byteBuffer = ByteBuffer.wrap(serializer.serialize(message));
+
         CompletableFuture<Void> acceptor = new CompletableFuture<>();
-        byteBuffer = ByteBuffer.wrap(serializer.serializePut((Map<Long, byte[]>) message.getContent()));
 
         // Send until no bytes remain in the buffer
         sendRecursive(acceptor);
@@ -75,5 +76,15 @@ public class Network {
         // Close the socket
         this.socket.close();
         this.byteBuffer.clear();
+    }
+
+    @Override
+    public String toString() {
+        try {
+            return String.valueOf(socket.getPort());
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return "";
     }
 }

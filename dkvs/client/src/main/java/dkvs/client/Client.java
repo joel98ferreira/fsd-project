@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 public class Client {
@@ -28,10 +29,12 @@ public class Client {
 
         // Connect to the server
         Connection.connect(serverAddress.getSocketAddress()).thenAccept(network -> {
+            System.out.println("> Connected to server " + serverAddress.getSocketAddress().toString() + "!");
 
             this.network = Objects.requireNonNull(network);
 
             System.out.println("> Client can now make requests.");
+            System.out.println("Usage examples:\n\tput 1->hello 2->distributed 3->systems 4->world\n\tget 1 2 3 4");
         });
     }
 
@@ -40,7 +43,7 @@ public class Client {
         CompletableFuture<Map<Long, byte[]>> response = new CompletableFuture<>();
 
         // Encapsulate the request in a message
-        Message request = new Message(RequestType.GET_REQUEST, keys);
+        Message request = new Message(UUID.randomUUID().toString(), RequestType.GET_REQUEST, keys);
 
         this.network.send(request).thenAccept(v -> {
             System.out.println("> Send the Get request to the server.");
@@ -63,7 +66,7 @@ public class Client {
         CompletableFuture<Void> response = new CompletableFuture<>();
 
         // Encapsulate the request in a message
-        Message request = new Message(RequestType.PUT_REQUEST, values);
+        Message request = new Message(UUID.randomUUID().toString(), RequestType.PUT_REQUEST, values);
 
         this.network.send(request).thenAccept(v -> {
             System.out.println("> Send the Put request to the server.");

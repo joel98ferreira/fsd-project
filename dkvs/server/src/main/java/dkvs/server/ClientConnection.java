@@ -4,16 +4,20 @@ import dkvs.shared.*;
 
 import spullara.nio.channels.FutureSocketChannel;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Objects;
-import java.util.concurrent.CompletableFuture;
 
 public class ClientConnection {
 
+    private final String clientUUID;
     private final Network network;
+    private final RequestHandler requestHandler;
 
-    public ClientConnection(FutureSocketChannel socketChannel, ByteBuffer byteBuffer) {
+    public ClientConnection(String clientUUID, FutureSocketChannel socketChannel, ByteBuffer byteBuffer, RequestHandler requestHandler) {
+        this.clientUUID = clientUUID;
         this.network = new Network(Objects.requireNonNull(socketChannel),  Objects.requireNonNull(byteBuffer));
+        this.requestHandler = Objects.requireNonNull(requestHandler);
     }
 
     public void read() {
@@ -21,10 +25,13 @@ public class ClientConnection {
             if(message == null){
                 // Close the connection
                 network.close();
-                System.out.println("Connection closed");
+                System.out.println("> Connection closed");
                 return;
             }
-            System.out.println("Received : " + message.getType());
+            System.out.println("> Received message with type: " + message.getType());
+
+            // Handle the received message
+            this.requestHandler.handleMessage(message, clientUUID, network);
 
             // Keep reading for client input
             this.read();
@@ -32,14 +39,16 @@ public class ClientConnection {
     }
 
 
-    public void write(){
+    public void write(RequestType type, Object object) throws IOException {
 
-        CompletableFuture<Void> writer = network.send(client.socket, message);
+        //Message message = new Message(type, object);
 
-        writter.thenAccept(vd -> {
-            System.out.println("Wrote " + message + " bytes");
-            client.messageId++;
-            write(client);
-        });
+       // CompletableFuture<Void> writer = network.send(message);
+
+       // writer.thenAccept(vd -> {
+       //    System.out.println("Sent to " + network.toString());
+            //client.messageId++;
+            //write();
+      //  });
     }
 }

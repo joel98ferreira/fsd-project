@@ -3,8 +3,6 @@ package dkvs.client;
 import dkvs.server.identity.ServerAddress;
 
 import java.io.*;
-import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
 
 public class Main {
     public static void main(String[] args) throws IOException{
@@ -19,18 +17,10 @@ public class Main {
         client.start();
 
         // Create a request handler
-        RequestHandler requestHandler = new RequestHandler(client);
+        RequestHandler requestHandler = new RequestHandler(client, new BufferedReader(new InputStreamReader(System.in)));
 
-        // Execute tests
-        HashMap<Long, byte[]> r = new HashMap<>();
-        r.put(1L, "o".getBytes(StandardCharsets.UTF_8));
-        r.put(2L, "l".getBytes(StandardCharsets.UTF_8));
-        r.put(3L, "a".getBytes(StandardCharsets.UTF_8));
-        requestHandler.handlePut(r);
-
-        // Block to wait for server response
-        BufferedReader in = new BufferedReader(new InputStreamReader(System.in));
-        in.readLine();
+        // Execute the input loop
+        requestHandler.inputLoop();
     }
 
     private static ServerAddress parseServerAddress(String[] args){

@@ -16,13 +16,15 @@ public class Server {
     private final ServerId serverId;
     private final ServerAddress serverAddress;
     private final KeyValueStore keyValueStore;
-    private final ServerNetwork connectedServers;
+    private final RequestHandler requestHandler;
+    private final ServerNetwork serverNetwork;
 
-   public Server(ServerConfig config){
+   public Server(ServerConfig config) {
        this.serverId = config.getLocalServerId();
        this.serverAddress = config.getLocalServerAddress();
        this.keyValueStore = new KeyValueStore();
-       this.connectedServers = new ServerNetwork(config);
+       this.serverNetwork = new ServerNetwork(config);
+       this.requestHandler = new RequestHandler(config, serverNetwork, keyValueStore);
 
        // NA NETWORK TER UMA CENA PARA RECEIVE DO
    }
@@ -39,9 +41,32 @@ public class Server {
        server.bind(serverAddress.getSocketAddress());
 
        // Start accepting new clients
-       Connection.acceptNew(server);
+       new Connection(this.requestHandler).acceptNew(serverAddress, server);
+
+       // Start the server network
+       this.serverNetwork.start();
 
        g.awaitTermination(Long.MAX_VALUE, TimeUnit.DAYS);
        System.out.println("> Finished!");
    }
+
+    public ServerId getServerId() {
+        return serverId;
+    }
+
+    public ServerAddress getServerAddress() {
+        return serverAddress;
+    }
+
+    public KeyValueStore getKeyValueStore() {
+        return keyValueStore;
+    }
+
+    public RequestHandler getRequestHandler() {
+        return requestHandler;
+    }
+
+    public ServerNetwork getServerNetwork() {
+        return serverNetwork;
+    }
 }
