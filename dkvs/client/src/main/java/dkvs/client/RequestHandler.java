@@ -84,11 +84,16 @@ public class RequestHandler {
             keysLong.add(Long.parseLong(key));
         }
 
+        System.out.println("> Sending to the server: ");
+        for (Long key : keysLong){
+            System.out.println("\t-> Get on key: " + key);
+        }
+
         CompletableFuture<Map<Long, byte[]>> req = this.client.get(keysLong);
 
         req.thenAccept(values -> {
             for (Long k : values.keySet()){
-                System.out.println("Get successful on key: " + k);
+                System.out.println("> Get successful on key: " + k + ", " + new String(values.get(k)));
             }
         });
     }
@@ -105,10 +110,6 @@ public class RequestHandler {
 
             Pattern keyValPattern = Pattern.compile("\\d+->\\w+");
 
-            // TODO: TESTE
-            for (String s : keysVals){
-                System.out.println(s);
-            }
             for (String keyValStr : keysVals){
                 Matcher keyValMatcher = keyValPattern.matcher(keyValStr);
 
@@ -126,6 +127,12 @@ public class RequestHandler {
             if (keyValues.size() == 0){
                 this.printError("Invalid!\nUsage (no spaces between key->val): put k->v k->v k->v");
             } else {
+
+                System.out.println("> Sending to the server: ");
+                for (Long key : keyValues.keySet()){
+                    System.out.println("\t-> Put on key: " + key);
+                }
+
                 CompletableFuture<Void> req = this.client.put(keyValues);
 
                 // TODO colocar aqui exceptions

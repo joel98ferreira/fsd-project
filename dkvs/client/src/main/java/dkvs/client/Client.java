@@ -70,13 +70,16 @@ public class Client {
 
         this.network.send(request).thenAccept(v -> {
             System.out.println("> Send the Put request to the server.");
-            this.network.receive().thenAccept(message -> {
-                System.out.println("> Received the Put response!");
-                if (message.getType() == RequestType.PUT_REPLY){
-                    System.out.println("> Put executed successfully");
-                    response.complete(null);
-                }
-            });
+
+        });
+
+        this.network.receive().thenAccept(message -> {
+            System.out.println("> Received the Put response!");
+            System.out.println(message.getType());
+            if (message.getType() == RequestType.PUT_REPLY){
+                System.out.println("> Put executed successfully");
+                response.complete(null);
+            }
         });
 
         return response;

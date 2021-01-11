@@ -5,6 +5,7 @@ import spullara.nio.channels.FutureSocketChannel;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.AbstractMap;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
@@ -52,10 +53,12 @@ public class Network {
 
     private void sendRecursive(CompletableFuture<Void> acceptor) {
         socket.write(byteBuffer).thenAccept(wr -> {
-            if(byteBuffer.hasRemaining())
+            if(byteBuffer.hasRemaining()) {
                 sendRecursive(acceptor);
-            else
-                acceptor.complete(null);
+            } else {
+               acceptor.complete(null);
+               byteBuffer.clear();
+            }
         });
     }
 
@@ -72,19 +75,17 @@ public class Network {
         return acceptor;
     }
 
+    public CompletableFuture<Message> sendAndReceive(Message message) throws IOException {
+        CompletableFuture<Message> response = new CompletableFuture<>();
+
+        send(message).thenAccept(v -> receive().thenAccept(response::complete));
+
+        return response;
+    }
+
     public void close(){
         // Close the socket
         this.socket.close();
         this.byteBuffer.clear();
-    }
-
-    @Override
-    public String toString() {
-        try {
-            return String.valueOf(socket.getPort());
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-        return "";
     }
 }

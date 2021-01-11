@@ -7,6 +7,8 @@ import spullara.nio.channels.FutureSocketChannel;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Objects;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 public class ClientConnection {
 
@@ -16,7 +18,7 @@ public class ClientConnection {
 
     public ClientConnection(String clientUUID, FutureSocketChannel socketChannel, ByteBuffer byteBuffer, RequestHandler requestHandler) {
         this.clientUUID = clientUUID;
-        this.network = new Network(Objects.requireNonNull(socketChannel),  Objects.requireNonNull(byteBuffer));
+        this.network = new Network(Objects.requireNonNull(socketChannel), Objects.requireNonNull(byteBuffer));
         this.requestHandler = Objects.requireNonNull(requestHandler);
     }
 
@@ -28,12 +30,11 @@ public class ClientConnection {
                 System.out.println("> Connection closed");
                 return;
             }
-            System.out.println("> Received message with type: " + message.getType());
 
             // Handle the received message
             this.requestHandler.handleMessage(message, clientUUID, network);
 
-            // Keep reading for client input
+            // Keep reading for client requests
             this.read();
         });
     }
@@ -41,14 +42,14 @@ public class ClientConnection {
 
     public void write(RequestType type, Object object) throws IOException {
 
-        //Message message = new Message(type, object);
+        Message message = new Message(UUID.randomUUID().toString(), type, object);
 
-       // CompletableFuture<Void> writer = network.send(message);
+       CompletableFuture<Void> writer = network.send(message);
 
-       // writer.thenAccept(vd -> {
-       //    System.out.println("Sent to " + network.toString());
+       writer.thenAccept(vd -> {
+           System.out.println("Sent to " + network.toString());
             //client.messageId++;
             //write();
-      //  });
+      });
     }
 }

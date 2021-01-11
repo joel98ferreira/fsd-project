@@ -1,9 +1,11 @@
 package dkvs.server;
 
 import dkvs.server.identity.ServerAddress;
+import dkvs.shared.RequestType;
 import spullara.nio.channels.FutureServerSocketChannel;
 import spullara.nio.channels.FutureSocketChannel;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Objects;
 import java.util.UUID;
@@ -27,11 +29,13 @@ public class Connection {
 
             ByteBuffer buf = ByteBuffer.allocate(1024);
 
-            ClientConnection con = new ClientConnection(UUID.randomUUID().toString(), client, buf, requestHandler);
+            ClientConnection clientConnection = new ClientConnection(UUID.randomUUID().toString(), client, buf, requestHandler);
+
+            // Accept new connections
+            acceptNew(address, server);
 
             // Start receiving from client input
-            con.read();
-            acceptNew(address, server);
+            clientConnection.read();
         });
     }
 

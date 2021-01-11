@@ -1,5 +1,7 @@
 package dkvs.server.network;
 
+import dkvs.server.ClientConnection;
+import dkvs.server.RequestHandler;
 import dkvs.server.ServerConfig;
 import dkvs.server.identity.ServerAddress;
 import dkvs.server.identity.ServerId;
@@ -13,6 +15,7 @@ import java.io.InputStreamReader;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 
 public class ServerNetwork {
 
@@ -28,7 +31,7 @@ public class ServerNetwork {
 
     public void start() throws IOException {
 
-        System.out.print("-----> When you are sure that ALL KNOWN SERVERS ARE RUNNING press any KEY!");
+        System.out.println("-----> When you are sure that ALL KNOWN SERVERS ARE RUNNING press any KEY!");
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in));
         in.readLine();
 
@@ -38,7 +41,7 @@ public class ServerNetwork {
                 System.out.println("> Connected successfully with the remote server: " + remoteServer.getValue().toString());
 
                 // Insert in the map the network connecting this server with his known peers
-                remoteServersNetwork.put(remoteServer.getKey(), network);
+                remoteServersNetwork.put(remoteServer.getKey(), Objects.requireNonNull(network));
             });
         }
     }
@@ -49,10 +52,13 @@ public class ServerNetwork {
      * @param message The message to send to the known server.
      * @throws IOException
      */
-    public void send(ServerId serverId, Message message) throws IOException {
+    public void sendAndReceive(final ServerId serverId, final Message message, final RequestHandler requestHandler) throws IOException {
         if (remoteServersNetwork.containsKey(serverId)){
-            remoteServersNetwork.get(serverId).send(message).thenAccept(v -> {
-                System.out.println("> Sent message with success to " + serverId.toString());
+            remoteServersNetwork.get(serverId).sendAndReceive(message).thenAccept(m -> {
+                System.out.println("> Received response message with success from " + serverId.toString() + ", Type: " + m.getType());
+
+                // Handle the reply
+                requestHandler.handleMessage(message, UUID.randomUUID().toString(), remoteServersNetwork.get(serverId));
             });
         }
     }

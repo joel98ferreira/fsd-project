@@ -1,4 +1,7 @@
 package dkvs.shared.exceptions;
 
-public class GetException {
+public class GetException extends Exception{
+    public GetException(Exception e){
+        super(e.getMessage());
+    }
 }
