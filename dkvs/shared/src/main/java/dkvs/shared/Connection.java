@@ -22,9 +22,21 @@ public class Connection {
             // Create a new network with the socket to the server and the byte buffer allocated
             Network network = new Network(socket, byteBuffer);
 
+            // Register the default payloads
+            registerNetworkDefaultPayloads(network);
+
             connect.complete(network);
         });
 
         return connect;
+    }
+
+    /**
+     * Method that register in a network all of the default payloads.
+     */
+    public static void registerNetworkDefaultPayloads(Network network){
+        network.registerPayloadType(Message.class);
+        network.registerPayloadType(MessageId.class);
+        network.registerPayloadType(RequestType.class);
     }
 }

@@ -1,6 +1,5 @@
 package dkvs.server.network;
 
-import dkvs.server.ClientConnection;
 import dkvs.server.RequestHandler;
 import dkvs.server.ServerConfig;
 import dkvs.server.identity.ServerAddress;
@@ -15,18 +14,17 @@ import java.io.InputStreamReader;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
-import java.util.UUID;
 
 public class ServerNetwork {
 
-    private final ServerId localServerId;
     private final Map<ServerId, ServerAddress> remoteServerAddresses;
     private final Map<ServerId, Network> remoteServersNetwork;
+    private final Map<ServerId, ScalarLogicalClock> remoteProcessesClocks;
 
     public ServerNetwork(ServerConfig serverConfig) {
-        this.localServerId = Objects.requireNonNull(serverConfig.getLocalServerId());
         this.remoteServerAddresses = Objects.requireNonNull(serverConfig.getRemoteServers());
         this.remoteServersNetwork = new HashMap<>();
+        this.remoteProcessesClocks = new HashMap<>();
     }
 
     public void start() throws IOException {
@@ -40,10 +38,28 @@ public class ServerNetwork {
 
                 System.out.println("> Connected successfully with the remote server: " + remoteServer.getValue().toString());
 
+                // Register server payloads and start network
+                registerServerPayloadsAndStartNetwork(network);
+
                 // Insert in the map the network connecting this server with his known peers
                 remoteServersNetwork.put(remoteServer.getKey(), Objects.requireNonNull(network));
+
+                // Insert in the map with the scalar logical clocks a new clock
+                remoteProcessesClocks.put(remoteServer.getKey(), new ScalarLogicalClock());
+
+               // receive(remoteServer.getKey(), network, requestHandler);
             });
         }
+    }
+
+    /**
+     * Method that register in a server network the payload type used to communicate between
+     * server network and starts the network.
+     */
+    public static void registerServerPayloadsAndStartNetwork(Network network){
+        network.registerPayloadType(ServerResponseContent.class);
+        network.registerPayloadType(ServerId.class);
+        network.start();
     }
 
     /**
@@ -52,14 +68,34 @@ public class ServerNetwork {
      * @param message The message to send to the known server.
      * @throws IOException
      */
-    public void sendAndReceive(final ServerId serverId, final Message message, final RequestHandler requestHandler) throws IOException {
+    public void send(final ServerId serverId, final Message message, final RequestHandler requestHandler) throws IOException {
         if (remoteServersNetwork.containsKey(serverId)){
-            remoteServersNetwork.get(serverId).sendAndReceive(message).thenAccept(m -> {
-                System.out.println("> Received response message with success from " + serverId.toString() + ", Type: " + m.getType());
+            remoteServersNetwork.get(serverId).send(message).thenAccept(v -> {
+                System.out.println("> Sent message " + message.getId() + " with type " + message.getType() +
+                        " to: " + serverId.toString() + " with success!");
 
-                // Handle the reply
-                requestHandler.handleMessage(message, UUID.randomUUID().toString(), remoteServersNetwork.get(serverId));
+                receive(serverId, remoteServersNetwork.get(serverId), requestHandler);
             });
         }
+    }
+
+    public void receive(final ServerId serverId, final Network network, final RequestHandler requestHandler){
+        network.receive().thenAccept(m -> {
+            if (m == null){
+                System.out.println("> Connection closed, disconnecting!");
+                remoteServersNetwork.get(serverId).close();
+                remoteServersNetwork.remove(serverId);
+                remoteProcessesClocks.remove(serverId);
+                remoteServerAddresses.remove(serverId);
+                return;
+            }
+
+            System.out.println("> Received message with id " + m.getId() + " and type " + m.getType() +
+                    " with success from " + serverId.toString() + "!");
+
+            requestHandler.handleMessage(m,  null, remoteServersNetwork.get(serverId));
+
+            receive(serverId, network, requestHandler);
+        });
     }
 }

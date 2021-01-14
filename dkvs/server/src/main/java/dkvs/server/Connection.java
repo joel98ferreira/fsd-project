@@ -1,14 +1,12 @@
 package dkvs.server;
 
+import dkvs.server.identity.ClientId;
 import dkvs.server.identity.ServerAddress;
-import dkvs.shared.RequestType;
 import spullara.nio.channels.FutureServerSocketChannel;
 import spullara.nio.channels.FutureSocketChannel;
 
-import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Objects;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 public class Connection {
@@ -25,11 +23,15 @@ public class Connection {
         CompletableFuture<FutureSocketChannel> futureClient = server.accept();
 
         futureClient.thenAccept(client -> {
-            System.out.println("> New client connected.");
+
+            // Generate a new client UUID
+            ClientId clientUUID = new ClientId();
+
+            System.out.println("> New client connected.\n> Client Id: " + clientUUID);
 
             ByteBuffer buf = ByteBuffer.allocate(1024);
 
-            ClientConnection clientConnection = new ClientConnection(UUID.randomUUID().toString(), client, buf, requestHandler);
+            ClientConnection clientConnection = new ClientConnection(clientUUID, client, buf, requestHandler);
 
             // Accept new connections
             acceptNew(address, server);

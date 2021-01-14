@@ -9,8 +9,15 @@ public class KeyValueStore {
     // Maps all the keys to values inserted by the client on this server
     private final Map<Long, byte[]> keyVal;
 
+    // Temporary map to hold the previous values when there is a put request holding
+    // locks on some keys, when the keys are unlocked (only when the put in all keys of that
+    // transaction is successful) then the values are removed from this map and we can use
+    // the default map (keyVal). If an error occurs then the previous versions are replaced.
+    private final Map<Long, byte[]> temporaryPreviousVersions;
+
     public KeyValueStore() {
         this.keyVal = new HashMap<>();
+        this.temporaryPreviousVersions = new HashMap<>();
     }
 
     private long latestTimestamp;
