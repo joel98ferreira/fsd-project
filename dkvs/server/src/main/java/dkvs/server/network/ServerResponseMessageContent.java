@@ -12,6 +12,9 @@ public class ServerResponseContent implements Serializable {
     // Used to identify which server sent the message
     private ServerId serverId;
 
+    // Logical Clock
+    private ScalarLogicalClock logicalClock;
+
     // Status code of the message
     private int statusCode;
 
@@ -26,6 +29,10 @@ public class ServerResponseContent implements Serializable {
 
     public ServerId getServerId() {
         return serverId;
+    }
+
+    public ScalarLogicalClock getLogicalClock(){
+        return this.logicalClock;
     }
 
     public int getStatusCode() {
