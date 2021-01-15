@@ -2,20 +2,42 @@ package dkvs.server;
 
 import dkvs.server.identity.ClientId;
 import dkvs.server.identity.ServerId;
+import dkvs.server.network.ScalarLogicalClock;
+import dkvs.server.network.ServerResponseMessageContent;
 import dkvs.shared.Message;
 import dkvs.shared.MessageId;
 import dkvs.shared.Network;
 
 import java.io.IOException;
-import java.util.AbstractMap;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.PriorityBlockingQueue;
 
 public class RequestState {
 
-   //TODO private final Queue<Integer> waitingResponseRequests;
+    // Comparator for the messages waiting to be processed and for the messages in the locking queue
+    //private static final Comparator<Message> MESSAGE_COMPARATOR =
+      //      Comparator
+        //            .comparingLong(Message::getContent)
+          //          .thenComparing(Message::getServerId);
+
+    // Queue that contains message id of the processes that are currently with locks
+    private final Queue<MessageId> lockingQueue;
+
+    // Queue containing the messages that tried to acquire the lock but the received clock is higher or equal than the minimum of each 3
+    private final Queue<Message> waitingToBeProcessed;
+
+    // This map represents if it has already received the reply with the unlock for a key.
+    // Even if it receives the unlock in one key the lock is only fully released when the transaction
+    // that has the lock in that key releases all locks in it's keys, so we can ensure atomicity.
+    private Map<MessageId, Map<Long, Boolean>> lockedKeys;
+
+    // Represents this server logical clock
+    private ScalarLogicalClock myLogicalClock;
+
+    // Represents the remote servers max clocks
+    private Map<ClientId, ScalarLogicalClock> logicalClocksByClientId;
 
     // This map represents the active connections, that make requests to the server. The id is the
     // client UUID and the value is the network connecting the server with the client.
@@ -34,7 +56,16 @@ public class RequestState {
     // UUID and not the client uuid that originally requested it.
     private final Map<MessageId, Map.Entry<ClientId, Map<ServerId, Boolean>>> serverRequests;
 
-    public RequestState() {
+    public RequestState(ServerConfig config) {
+
+        this.logicalClocksByClientId = new ConcurrentHashMap<>();
+
+        // Obtain the set of existing processes in the network and initialize the clocks
+        Set<ServerId> remoteServers = config.getRemoteServers().keySet();
+        remoteServers.forEach(server -> this.logicalClocksByClientId.put(new ClientId(server.toString()), new ScalarLogicalClock()));
+
+        this.lockingQueue = new ConcurrentLinkedQueue<>();
+        this.waitingToBeProcessed = new PriorityBlockingQueue<>();
         this.connections = new ConcurrentHashMap<>();
         this.getRequests = new ConcurrentHashMap<>();
         this.serverRequests = new ConcurrentHashMap<>();
@@ -50,6 +81,45 @@ public class RequestState {
         if (!connections.containsKey(clientId)) {
             this.connections.put(clientId, network);
         }
+    }
+
+    public void newClock(ClientId clientId, Object contentMessage){
+        ServerResponseMessageContent serverResponse = (ServerResponseMessageContent) contentMessage;
+        ScalarLogicalClock receivedClock = serverResponse.getLogicalClock();
+
+        logicalClocksByClientId.put(clientId, receivedClock);
+
+        // Calculate the max between my clock and the received one and increment
+        myLogicalClock.receiveEvent(receivedClock);
+    }
+
+    /**
+     * Method that given a received clock validates if it can be put into the queue of locks.
+     * @param receivedClock The received clock.
+     * @return
+     */
+    public boolean isClockValidToInsertInQueue(ScalarLogicalClock receivedClock){
+        int minClocks = myLogicalClock.getCounter();
+
+        for (ScalarLogicalClock clock : logicalClocksByClientId.values()){
+            minClocks = Math.min(minClocks, clock.getCounter());
+        }
+
+        // Verify if the received clock is less than the minimum of the clocks for all processes
+        return receivedClock.getCounter() < minClocks;
+    }
+
+    /**
+     * Method that inserts a message in a locking queue.
+     * @param messageId  The message id.
+     * @param lockedKeys The locked keys
+     */
+    public void insertInLockingQueue(MessageId messageId, Collection<Long> lockedKeys){
+
+        Map<Long, Boolean> lockMaps = new ConcurrentHashMap<>();
+        lockedKeys.forEach(key -> lockMaps.put(key, false));
+
+        this.lockedKeys.put(messageId, lockMaps);
     }
 
     /**
@@ -168,6 +238,35 @@ public class RequestState {
                     System.out.println("> Message with type " + message.getType().toString() + " sent to client " + originalClientId + " with success.");
                 });
             }
+        }
+    }
+
+    /**
+     * Method that returns my current clock
+     */
+    public ScalarLogicalClock getMyLogicalClock(){
+        return this.myLogicalClock;
+    }
+
+    /**
+     * Method that given an event updates my logical clock.
+     * @param event The event.
+     * @param receivedClock Only used in a receive event.
+     */
+    public void updateMyLogicalClock(ScalarLogicalClock.Event event, ScalarLogicalClock receivedClock){
+        switch (event){
+            case SEND:
+                this.myLogicalClock.sendEvent();
+                System.out.println("> Send Event, My logical clock is now: " + myLogicalClock.getCounter());
+                break;
+            case LOCAL:
+                this.myLogicalClock.localEvent();
+                System.out.println("> Local Event, My logical clock is now: " + myLogicalClock.getCounter());
+                break;
+            case RECEIVE:
+                this.myLogicalClock.receiveEvent(receivedClock);
+                System.out.println("> Receive Event, My logical clock is now: " + myLogicalClock.getCounter());
+                break;
         }
     }
 

@@ -2,21 +2,23 @@ package dkvs.server;
 
 import dkvs.server.identity.ClientId;
 import dkvs.server.identity.ServerId;
+import dkvs.server.network.ScalarLogicalClock;
 import dkvs.server.network.ServerNetwork;
-import dkvs.server.network.ServerResponseContent;
+import dkvs.server.network.ServerRequestMessageContent;
+import dkvs.server.network.ServerResponseMessageContent;
 import dkvs.shared.*;
 
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 
 public class RequestHandler {
 
     // Local Server ID
     private final ServerId localServerId;
 
+    // The Server Network
     private final ServerNetwork serverNetwork;
 
     // Key Value Store
@@ -37,7 +39,7 @@ public class RequestHandler {
         this.localServerId = Objects.requireNonNull(serverConfig.getLocalServerId());
         this.serverNetwork = Objects.requireNonNull(serverNetwork);
         this.keyValueStore = Objects.requireNonNull(keyValueStore);
-        this.requestState = new RequestState();
+        this.requestState = new RequestState(serverConfig);
         this.consistencyHash = new ConsistencyHash(Objects.requireNonNull(serverConfig));
     }
 
@@ -50,33 +52,33 @@ public class RequestHandler {
      */
     public void handleMessage(final Message message, final ClientId clientId, final Network network) {
 
-        if (clientId != null) {
+        if (!clientId.getClientId().contains("Server")) {
             // Add the connection to the request state, if the connection is already in the request state then it's ignored
             requestState.addConnection(clientId, network);
             if (DEBUG) System.out.println("> Received a message from client: " + clientId + " with id: " + message.getId());
         }else {
-            if (DEBUG) System.out.println("> Received the response to a request in the Server Network with id: " + message.getId());
+            // Request from the server network add the clock and calculate the max clock for this server
+            requestState.newClock(clientId, message.getContent());
+            if (DEBUG) System.out.println("> Received the response to a request in the Server Network from: " + clientId.getClientId() + " with id: " + message.getId());
         }
+
+        // TODO: VALIDATE IF CAN BE SATISFIED
 
         switch (message.getType()){
             case PUT_REQUEST: // Request received from a client
                 if (DEBUG) System.out.println("> Received a PUT REQUEST!");
-                assert clientId != null;
                 handlePutRequest(message, clientId);
                 break;
             case PUT_EXECUTE: // Execution received from a known peer (server)
                 if (DEBUG) System.out.println("> Received a PUT EXECUTE!");
-                assert clientId != null;
                 handlePutExecute(message, clientId);
                 break;
             case GET_REQUEST: // Request received from a client
                 if (DEBUG) System.out.println("> Received a GET REQUEST!");
-                assert clientId != null;
                 handleGetRequest(message, clientId);
                 break;
             case GET_EXECUTE: // Execution received from a known peer (server)
                 if (DEBUG) System.out.println("> Received a GET EXECUTE!");
-                assert clientId != null;
                 handleGetExecute(message, clientId);
                 break;
             case PUT_REPLY:  // Receive a put ACK from the remote server where it has been executed
@@ -86,6 +88,12 @@ public class RequestHandler {
             case GET_REPLY:  // Receive the map containing the requested keys
                 if (DEBUG) System.out.println("> Received a GET REPLY!");
                 handleGetReply(message);
+                break;
+            case PUT_LOCK:   // Receive a message from a process to obtain lock in some keys and to update the clocks
+                if (DEBUG) System.out.println("> Received a PUT LOCK!");
+                break;
+            case PUT_UNLOCK: // Receive a message from a process to release lock in some keys and to update the clocks
+                if (DEBUG) System.out.println("> Received a PUT UNLOCK!");
                 break;
             default:         // Unknown message type
                 if (DEBUG) System.out.println("> Unknown Request Type!");
@@ -131,20 +139,68 @@ public class RequestHandler {
                     // Update the status of the put reply message, since this put request was to the current server
                     handlePutRequestUpdate(message.getId(), serverPut.getKey());
 
-                } else { // Send the request to the corresponding server TODO: concorrentemente?
+                } else { // Send the request to the corresponding server
+
+                    // Determine the Key set that are not directly to the PUT EXECUTE server, so it can lock on other keys
+                    // to known when it receives the PUT UNLOCK that it can finish the transaction and make the previous version
+                    // values deleted.
+                    Collection<Long> otherPutKeys = new ArrayList<>(values.keySet());
+                    otherPutKeys.removeAll(serverPut.getValue().entrySet());
+
+                    // Create a new message with PUT_EXECUTE type, the PUT_EXECUTE message has an implicit LOCK on that key set
+                    // This message is sent with my current logical clock, the values that I want to insert and lock in that server
+                    // and the other values that are relative to the other requests that I made to other servers, so it can "lock"
+                    // that keys, and just assumes that all of the values should be written to the definitive map when it receives
+                    // all unlocks from all of the keys of that transaction.
+                    Message putExecute = new Message(message.getId(), RequestType.PUT_EXECUTE,
+                            new ServerRequestMessageContent(
+                                    requestState.getMyLogicalClock(),
+                                    new AbstractMap.SimpleEntry<>(serverPut.getValue(), otherPutKeys)
+                            )
+                    );
 
                     if (DEBUG) System.out.println("> Sending PUT EXECUTE to: " + serverPut.getKey().toString());
 
-
-                    Collection<Long> otherPutKeys = new ArrayList<>();
-
-                    // Create a new message with PUT_EXECUTE type TODO: Mandar relogios logicosx
-                    Message putExecute = new Message(message.getId(), RequestType.PUT_EXECUTE, serverPut.getValue());
-
-                    // Send the message to the server
+                    // Send the message with PUT_EXECUTE to the server
                     this.serverNetwork.send(serverPut.getKey(), putExecute, this);
+
+                    // Update my logical clock with a send event
+                    this.requestState.updateMyLogicalClock(ScalarLogicalClock.Event.SEND, null);
                 }
             }
+
+            // Send the PUT LOCK to other peers that are currently not in the PUT EXECUTE servers set
+            List<ServerId> remoteServersIdsToSendLock = this.serverNetwork.getRemoteServersIds();
+            remoteServersIdsToSendLock.removeAll(mappedByServerPut.keySet());
+
+            if (remoteServersIdsToSendLock.size() != 0){
+                for (ServerId serverId : remoteServersIdsToSendLock){
+
+                    // Collection with all keys that are currently running in the transaction
+                    Collection<Long> putKeys = new ArrayList<>(values.keySet());
+
+                    // Create a new message with PUT_LOCK type, the PUT_LOCK is just send for all other
+                    // servers that are not included in the transaction. This will be useful since after other
+                    // server receives a PUT_LOCK it can send a CLOCK_UPDATE message
+                    Message putLock = new Message(message.getId(), RequestType.PUT_LOCK,
+                            new ServerRequestMessageContent(
+                                    requestState.getMyLogicalClock(),
+                                    putKeys
+                            )
+                    );
+
+                    if (DEBUG) System.out.println("> Sending PUT LOCK to: " + serverId.toString());
+
+                    // Send the message with PUT_LOCK to the server
+                    this.serverNetwork.send(serverId, putLock, this);
+
+                    // Update my logical clock with send event
+                    this.requestState.updateMyLogicalClock(ScalarLogicalClock.Event.SEND, null);
+                }
+            }
+
+
+
 
             // TODO: ESPERAR PELA RESPOSTA 8SEGUNDOS E CASO NAO RECEBER MANDAR ERRO
             // es.schedule(() -> {
@@ -168,17 +224,38 @@ public class RequestHandler {
      */
     private void handlePutExecute(final Message message, final ClientId clientId){
         try {
-            Map<Long, byte[]> values = (Map<Long, byte[]>) message.getContent();
+            ServerRequestMessageContent requestMessageContent = (ServerRequestMessageContent) message.getContent();
 
-            // Insert the received values in the key value store
-            this.keyValueStore.put(values);
+            if (DEBUG) System.out.println("> The received clock from: " + clientId  + " is: " + requestMessageContent.getLogicalClock().toString());
 
-            if (DEBUG) System.out.println("> PUT EXECUTE completed successfully.");
+            AbstractMap.SimpleEntry<Map<Long, byte[]>, Collection<Long>> putExecuteInfo = (AbstractMap.SimpleEntry<Map<Long, byte[]>, Collection<Long>>) requestMessageContent.getContent();
 
-            // Send a message acknowledging the put execution successfully
-            Message response = new Message(message.getId(), RequestType.PUT_REPLY, new ServerResponseContent(this.localServerId, 200,  null)); // 200 - OK
-            requestState.sendRequestResponse(clientId, response);
+            // Validate if the received message can be considered to insert in the queue
+            boolean canExecuteRequest =  requestState.isClockValidToInsertInQueue(requestMessageContent.getLogicalClock());
 
+            if (canExecuteRequest){
+
+                // Obtain all keys of the transaction
+                Collection<Long> lockedKeys = putExecuteInfo.getValue();
+                lockedKeys.addAll(putExecuteInfo.getKey().keySet());
+
+                // Insert in the locking queue
+                this.requestState.insertInLockingQueue(message.getId(), lockedKeys);
+
+                // TODO: am i the first?
+                // Update the values in the Key Value Store and save the previous ones
+                this.keyValueStore.putPrepare(putExecuteInfo.getKey());
+
+                if (DEBUG) System.out.println("> PUT Prepare is done, waiting for unlocks to complete PUT.");
+
+                // Send a message acknowledging the put execution successfully
+                Message response = new Message(message.getId(), RequestType.PUT_REPLY, new ServerResponseMessageContent(this.localServerId, 200,  null)); // 200 - OK
+                requestState.sendRequestResponse(clientId, response);
+
+
+            } else {
+                // TODO: INSERIR NA QUEUE DE PENDENTES
+            }
         } catch (Exception e){
             System.err.println("Error in PUT EXECUTE");
             e.printStackTrace();
@@ -192,7 +269,7 @@ public class RequestHandler {
      */
     private void handlePutReply(final Message message){
         try {
-            ServerResponseContent putInfo = (ServerResponseContent) message.getContent();
+            ServerResponseMessageContent putInfo = (ServerResponseMessageContent) message.getContent();
 
             if (DEBUG) System.out.println("> PUT REPLY from: " + putInfo.getServerId().toString());
 
@@ -302,7 +379,7 @@ public class RequestHandler {
             if (DEBUG) System.out.println("> GET EXECUTE completed successfully.");
 
             // Send a message acknowledging the get execution successfully and with the obtained map
-            Message response = new Message(message.getId(), RequestType.GET_REPLY, new ServerResponseContent(this.localServerId, 200, values));
+            Message response = new Message(message.getId(), RequestType.GET_REPLY, new ServerResponseMessageContent(this.localServerId, 200, values));
             requestState.sendRequestResponse(clientId, response);
 
         } catch (Exception e){
@@ -317,7 +394,7 @@ public class RequestHandler {
      */
     private void handleGetReply(final Message message){
         try {
-            ServerResponseContent getInfo = (ServerResponseContent) message.getContent();
+            ServerResponseMessageContent getInfo = (ServerResponseMessageContent) message.getContent();
 
             if (DEBUG) System.out.println("> GET REPLY from: " + getInfo.getServerId().toString());
 

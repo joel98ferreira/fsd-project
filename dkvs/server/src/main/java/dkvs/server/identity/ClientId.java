@@ -15,6 +15,10 @@ public class ClientId implements Comparable<ClientId>, Serializable {
         this.clientUUID = UUID.randomUUID().toString();
     }
 
+    public ClientId(String clientId){
+        this.clientUUID = clientId;
+    }
+
     public String getClientId() {
         return clientUUID;
     }

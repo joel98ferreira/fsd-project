@@ -29,7 +29,9 @@ public class ClientConnection {
         this.requestHandler = Objects.requireNonNull(requestHandler);
     }
 
-    public void read() {
+    public CompletableFuture<Message> read() {
+        CompletableFuture<Message> acceptor = new CompletableFuture<>();
+
         network.receive().thenAccept(message -> {
             if(message == null){
                 // Close the connection
@@ -41,9 +43,10 @@ public class ClientConnection {
             // Handle the received message
             this.requestHandler.handleMessage(message, this.clientId, network);
 
-            // Keep reading for client requests
-            this.read();
-        });
+            acceptor.complete(message);
+        }).thenCompose(r -> read());
+
+        return acceptor;
     }
 
     public void write(RequestType type, Object object) throws IOException {

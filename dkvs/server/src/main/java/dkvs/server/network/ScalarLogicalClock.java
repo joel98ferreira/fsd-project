@@ -1,5 +1,7 @@
 package dkvs.server.network;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -51,5 +53,38 @@ public class ScalarLogicalClock implements Comparable<ScalarLogicalClock>{
         // -1 -> The time from the received clock is less than mine
         //  1 -> The time from the received clock is higher than mine
         return Integer.compare(logicalClock.counter, this.counter);
+    }
+
+    /**
+     * Represents the possible scalar logical clocks events.
+     */
+    public enum Event {
+
+        SEND(1),    // Send Event
+        RECEIVE(2), // Receive event
+        LOCAL(3);   // Local event
+
+
+        private final int type;
+
+        Event(int type) {
+            this.type = type;
+        }
+
+        public int getType() {
+            return type;
+        }
+
+        private final static Map<Integer, Event> map = new HashMap<>();
+
+        static {
+            for (Event type : Event.values()) {
+                map.put(type.getType(), type);
+            }
+        }
+
+        static Event getEvent(int type) {
+            return map.get(type);
+        }
     }
 }

@@ -29,11 +29,7 @@ public class Server {
        // NA NETWORK TER UMA CENA PARA RECEIVE DO
    }
 
-   public void start() throws IOException, InterruptedException {
-       //State state = new State();
-       AsynchronousChannelGroup g =
-               AsynchronousChannelGroup.withFixedThreadPool(1, defaultThreadFactory());
-
+   public void start(AsynchronousChannelGroup g) throws IOException, InterruptedException {
        // Open a socket channel with a thread pool group
        FutureServerSocketChannel server = FutureServerSocketChannel.open(g);
 
@@ -44,10 +40,7 @@ public class Server {
        new Connection(this.requestHandler).acceptNew(serverAddress, server);
 
        // Start the server network
-       this.serverNetwork.start();
-
-       g.awaitTermination(Long.MAX_VALUE, TimeUnit.DAYS);
-       System.out.println("> Finished!");
+       this.serverNetwork.start(g, requestHandler);
    }
 
     public ServerId getServerId() {

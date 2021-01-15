@@ -1,6 +1,10 @@
 package dkvs.server;
 
+import java.nio.channels.AsynchronousChannelGroup;
 import java.nio.file.Paths;
+import java.util.concurrent.TimeUnit;
+
+import static java.util.concurrent.Executors.defaultThreadFactory;
 
 public class Main {
 
@@ -19,8 +23,15 @@ public class Main {
         // Parse the configuration file (default path: ../configs/server-1.yaml)
         ServerConfig config = ServerConfig.parseServerConfigFileYaml(Paths.get(args[0]));
 
+        // Create a thread group
+        AsynchronousChannelGroup g =
+                AsynchronousChannelGroup.withFixedThreadPool(20, defaultThreadFactory());
+
         // Start Server
         Server server = new Server(config);
-        server.start();
+        server.start(g);
+
+        g.awaitTermination(Long.MAX_VALUE, TimeUnit.DAYS);
+        System.out.println("> Server Finished!");
     }
 }

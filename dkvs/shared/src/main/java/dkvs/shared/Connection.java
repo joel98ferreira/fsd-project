@@ -5,14 +5,15 @@ import spullara.nio.channels.FutureSocketChannel;
 import java.io.IOException;
 import java.net.SocketAddress;
 import java.nio.ByteBuffer;
+import java.nio.channels.AsynchronousChannelGroup;
 import java.util.concurrent.CompletableFuture;
 
 public class Connection {
 
-    public static CompletableFuture<Network> connect(SocketAddress address) throws IOException {
+    public static CompletableFuture<Network> connect(SocketAddress address, AsynchronousChannelGroup g) throws IOException {
 
         CompletableFuture<Network> connect = new CompletableFuture<>();
-        FutureSocketChannel socket = new FutureSocketChannel();
+        FutureSocketChannel socket = FutureSocketChannel.open(g);
 
         socket.connect(address).thenAccept(c -> {
 

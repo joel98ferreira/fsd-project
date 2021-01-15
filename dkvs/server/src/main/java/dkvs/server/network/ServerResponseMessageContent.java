@@ -2,28 +2,24 @@ package dkvs.server.network;
 
 import dkvs.server.identity.ServerId;
 
-import java.io.IOException;
-import java.io.Serializable;
-
-public class ServerResponseContent implements Serializable {
-
-    private static final long serialVersionUID = 7526472295622776147L;
+public class ServerResponseMessageContent {
 
     // Used to identify which server sent the message
-    private ServerId serverId;
+    private final ServerId serverId;
 
     // Logical Clock
-    private ScalarLogicalClock logicalClock;
+    private final ScalarLogicalClock logicalClock;
 
     // Status code of the message
-    private int statusCode;
+    private final int statusCode;
 
     // Content object
-    private Object object;
+    private final Object object;
 
-    public ServerResponseContent(ServerId serverId, int statusCode, Object object) {
+    public ServerResponseMessageContent(ServerId serverId, ScalarLogicalClock scalarLogicalClock, int statusCode, Object object) {
         this.serverId = serverId;
         this.statusCode = statusCode;
+        this.logicalClock = scalarLogicalClock;
         this.object = object;
     }
 
@@ -41,17 +37,5 @@ public class ServerResponseContent implements Serializable {
 
     public Object getContent() {
         return object;
-    }
-
-    private void writeObject(java.io.ObjectOutputStream stream) throws IOException {
-        stream.writeObject(serverId);
-        stream.writeInt(statusCode);
-        stream.writeObject(object);
-    }
-
-    private void readObject(java.io.ObjectInputStream stream) throws IOException, ClassNotFoundException {
-        serverId = (ServerId) stream.readObject();
-        statusCode = stream.readInt();
-        object = stream.readObject();
     }
 }

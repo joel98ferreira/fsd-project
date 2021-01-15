@@ -70,7 +70,7 @@ public class KeyValueStore {
      * can just rollback and copy all of the previous versions maps.
      * @param values The values to insert.
      */
-    public void putNewVersionAndSavePrevious(Map<Long, byte[]> values){
+    public void putPrepare(Map<Long, byte[]> values){
         for (Map.Entry<Long, byte[]>  val : values.entrySet()){
             // If the key has already an associated value, store it's previous version
             if (keyVal.containsKey(val.getKey())){
