@@ -9,11 +9,11 @@ import java.nio.ByteBuffer;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
-public class Connection {
+public class ClientAcceptor {
 
     private final RequestHandler requestHandler;
 
-    public Connection(RequestHandler requestHandler) {
+    public ClientAcceptor(RequestHandler requestHandler) {
         this.requestHandler = Objects.requireNonNull(requestHandler);
     }
 

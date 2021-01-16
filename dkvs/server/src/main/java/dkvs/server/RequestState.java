@@ -3,15 +3,19 @@ package dkvs.server;
 import dkvs.server.identity.ClientId;
 import dkvs.server.identity.ServerId;
 import dkvs.server.network.ScalarLogicalClock;
+import dkvs.server.network.ServerNetwork;
+import dkvs.server.network.ServerRequestMessageContent;
 import dkvs.server.network.ServerResponseMessageContent;
 import dkvs.shared.Message;
 import dkvs.shared.MessageId;
 import dkvs.shared.Network;
+import dkvs.shared.RequestType;
 
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.PriorityBlockingQueue;
 
 public class RequestState {
@@ -22,22 +26,32 @@ public class RequestState {
         //            .comparingLong(Message::getContent)
           //          .thenComparing(Message::getServerId);
 
-    // Queue that contains message id of the processes that are currently with locks
-    private final Queue<MessageId> lockingQueue;
+    // This queue represents the priority of the currently running put requests, status could be initial
+    // (acquiring locks), waiting to acquire locks or waiting
+    private final ConcurrentSkipListSet<AbstractMap.SimpleEntry<Message, Status>> priorityQueue;
+
+    // Ao meter na fila, valido se ha dependencias nos que estao a frente com estao WAITING
+
+    // Remover da fila alguma mensamge, removo mensagem e começo a processar à cabeça os que estão waiting
+    // Removo da fila vou remover os locks deste server
+
+    private final Map<Long, Boolean> locksOnKeysInThisServer;
+
+    // Sempre que recebo mensagem com relogios corro a queue mensanes para serem inseridas na queue e insiro,
 
     // Queue containing the messages that tried to acquire the lock but the received clock is higher or equal than the minimum of each 3
-    private final Queue<Message> waitingToBeProcessed;
+    private final Queue<Message> waitingToBeInsertedInQeue;
 
     // This map represents if it has already received the reply with the unlock for a key.
     // Even if it receives the unlock in one key the lock is only fully released when the transaction
     // that has the lock in that key releases all locks in it's keys, so we can ensure atomicity.
-    private Map<MessageId, Map<Long, Boolean>> lockedKeys;
+    private Map<MessageId, Map<Long, Boolean>> transactionConfirmations;
 
     // Represents this server logical clock
-    private ScalarLogicalClock myLogicalClock;
+    private final ScalarLogicalClock myLogicalClock;
 
     // Represents the remote servers max clocks
-    private Map<ClientId, ScalarLogicalClock> logicalClocksByClientId;
+    private final Map<ClientId, ScalarLogicalClock> logicalClocksByClientId;
 
     // This map represents the active connections, that make requests to the server. The id is the
     // client UUID and the value is the network connecting the server with the client.
@@ -56,7 +70,16 @@ public class RequestState {
     // UUID and not the client uuid that originally requested it.
     private final Map<MessageId, Map.Entry<ClientId, Map<ServerId, Boolean>>> serverRequests;
 
-    public RequestState(ServerConfig config) {
+    // The Server Network
+    private final ServerNetwork serverNetwork;
+
+    // Key Value Store
+    private final KeyValueStore keyValueStore;
+
+    public RequestState(ServerConfig config, ServerNetwork serverNetwork, KeyValueStore keyValueStore) {
+
+        this.serverNetwork = Objects.requireNonNull(serverNetwork);
+        this.keyValueStore = Objects.requireNonNull(keyValueStore);
 
         this.logicalClocksByClientId = new ConcurrentHashMap<>();
 
@@ -64,8 +87,12 @@ public class RequestState {
         Set<ServerId> remoteServers = config.getRemoteServers().keySet();
         remoteServers.forEach(server -> this.logicalClocksByClientId.put(new ClientId(server.toString()), new ScalarLogicalClock()));
 
-        this.lockingQueue = new ConcurrentLinkedQueue<>();
-        this.waitingToBeProcessed = new PriorityBlockingQueue<>();
+        this.priorityQueue = new ConcurrentSkipListSet<>();
+        this.waitingToBeInsertedInQeue = new PriorityBlockingQueue<>();
+        this.transactionConfirmations = new ConcurrentHashMap<>();
+        this.locksOnKeysInThisServer = new ConcurrentHashMap<>();
+
+        this.myLogicalClock = new ScalarLogicalClock();
         this.connections = new ConcurrentHashMap<>();
         this.getRequests = new ConcurrentHashMap<>();
         this.serverRequests = new ConcurrentHashMap<>();
@@ -83,14 +110,20 @@ public class RequestState {
         }
     }
 
+    /**
+     * Method used when receiving a new clock update.
+     * @param clientId The client id that owns the clock.
+     * @param contentMessage object.
+     */
     public void newClock(ClientId clientId, Object contentMessage){
         ServerResponseMessageContent serverResponse = (ServerResponseMessageContent) contentMessage;
         ScalarLogicalClock receivedClock = serverResponse.getLogicalClock();
 
-        logicalClocksByClientId.put(clientId, receivedClock);
-
-        // Calculate the max between my clock and the received one and increment
-        myLogicalClock.receiveEvent(receivedClock);
+        if (logicalClocksByClientId.containsKey(clientId)){
+            logicalClocksByClientId.replace(clientId, receivedClock);
+        } else {
+            logicalClocksByClientId.put(clientId, receivedClock);
+        }
     }
 
     /**
@@ -110,16 +143,143 @@ public class RequestState {
     }
 
     /**
-     * Method that inserts a message in a locking queue.
-     * @param messageId  The message id.
-     * @param lockedKeys The locked keys
+     * Method that inserts a message in a the queue, if it haves dependencies in other keys
+     * then it just inserts the key in the queue with status waiting, otherwise stays in the
+     * queue with status running.
+     * @param message  The message id.
+     * @param keys The keys
      */
-    public void insertInLockingQueue(MessageId messageId, Collection<Long> lockedKeys){
+    public synchronized Status insertInQueue(Message message, Collection<Long> keys){
 
-        Map<Long, Boolean> lockMaps = new ConcurrentHashMap<>();
-        lockedKeys.forEach(key -> lockMaps.put(key, false));
+        Map<Long, Boolean> keysWriteConfirmation = new ConcurrentHashMap<>();
+        keys.forEach(key -> keysWriteConfirmation.put(key, false));
 
-        this.lockedKeys.put(messageId, lockMaps);
+        this.transactionConfirmations.put(message.getId(), keysWriteConfirmation);
+
+        boolean haveDependenciesInQueue = false;
+
+        for (AbstractMap.SimpleEntry<Message, Status> t : priorityQueue){
+            if (t.getValue() == Status.WAITING){
+                for (Long keyToAcquireLock : keys) {
+                    if (transactionConfirmations.get(t.getKey().getId()).containsKey(keyToAcquireLock) ||
+                            (locksOnKeysInThisServer.containsKey(keyToAcquireLock) &&
+                                    locksOnKeysInThisServer.get(keyToAcquireLock) != null &&
+                                    locksOnKeysInThisServer.get(keyToAcquireLock).equals(true)
+                            )
+                    ){
+                        haveDependenciesInQueue = true;
+                    }
+                }
+            }
+        }
+
+        if (haveDependenciesInQueue) {
+            System.out.println("> Had dependencies in the request, waiting for lock releases....");
+            this.priorityQueue.add(new AbstractMap.SimpleEntry<>(message, Status.WAITING));
+
+            return Status.WAITING;
+        } else {
+            // Acquire locks
+            for (Long keyToLock : keys){
+                this.locksOnKeysInThisServer.put(keyToLock, true);
+            }
+
+            System.out.println("> No dependencies acquiring locks....");
+
+            this.priorityQueue.add(new AbstractMap.SimpleEntry<>(message, Status.RUNNING));
+
+            return Status.RUNNING;
+        }
+    }
+
+    /**
+     * Method that once receives a write confirmation with put prepare on some keys in a
+     * running transaction marks them as done, if it completes then sends result to client.
+     * @param messageId The messageId of the transaction.
+     * @param keys The keys written.
+     */
+    public synchronized Status receivedWriteConfirmation(MessageId messageId, Collection<Long> keys){
+
+        if (this.transactionConfirmations.containsKey(messageId)){
+            for (Long k : keys){
+                if (transactionConfirmations.get(messageId).containsKey(k)){
+                    this.transactionConfirmations.get(messageId).replace(k, true);
+                }
+            }
+
+            // If is completed
+            if (!this.transactionConfirmations.get(messageId).containsValue(false)){
+                return Status.COMPLETED;
+            } else {
+                return Status.NOT_COMPLETED;
+            }
+        }
+        return Status.ERROR;
+    }
+
+    /**
+     * Method that confirms a message, as unlocked and processes the messages waiting in the queue.
+     * @param messageId The id that identifies the "transaction".
+     */
+    public synchronized void unlockKeys(MessageId messageId){
+        Collection<Long> keysToUnlock = this.transactionConfirmations.get(messageId).keySet();
+
+        for (Long k : keysToUnlock){
+            if (this.locksOnKeysInThisServer.containsKey(k))
+                this.locksOnKeysInThisServer.replace(k, false);
+        }
+
+        this.transactionConfirmations.remove(messageId);
+        this.priorityQueue.removeIf(s -> s.getKey().getId().equals(messageId));
+
+
+
+    }
+
+    private MessageId processNextMessageToAcquireLocks(){
+        for (AbstractMap.SimpleEntry<Message, Status> t : priorityQueue){
+            if (t.getValue() == Status.WAITING){
+                ServerRequestMessageContent requestMessageContent = (ServerRequestMessageContent) t.getKey().getContent();
+                AbstractMap.SimpleEntry<Map<Long, byte[]>, Collection<Long>> putInfo = (AbstractMap.SimpleEntry<Map<Long, byte[]>, Collection<Long>>) requestMessageContent.getContent();
+                Collection<Long> keysToAcquireLock = putInfo.getKey().keySet();
+
+                for (Long keyToAcquireLock : keysToAcquireLock) {
+                    if (!(locksOnKeysInThisServer.containsKey(keyToAcquireLock) &&
+                            locksOnKeysInThisServer.get(keyToAcquireLock) != null &&
+                            locksOnKeysInThisServer.get(keyToAcquireLock).equals(true))) {
+
+                        // Insert with status running
+                        priorityQueue.add(new AbstractMap.SimpleEntry<>(t.getKey(), Status.RUNNING));
+
+                        // Remove from the queue
+                        priorityQueue.removeIf(s -> s.getKey().getId().equals(t.getKey().getId()) && s.getValue() == Status.WAITING);
+
+                        // Acquire locks
+                        for (Long keyToLock : keysToAcquireLock){
+                            this.locksOnKeysInThisServer.put(keyToLock, true);
+                        }
+
+                        // Prepare the PUT
+                        keyValueStore.putPrepare(putInfo.getKey());
+
+                        // Mark as done
+                        Status s = receivedWriteConfirmation(t.getKey().getId(), putInfo.getKey().keySet());
+
+                        if (s == Status.COMPLETED){
+
+                        } else if (s == Status.NOT_COMPLETED){
+                            for (ServerId serverId : serverNetwork.getRemoteServersIds()){
+                                Message putReply = new Message(
+                                        t.getKey().getId(),
+                                        RequestType.PUT_REPLY,
+                                        new ServerResponseMessageContent(this.serverNetwork.getLocalServerId(), 200,  null)); // 200 - OK
+                                serverNetwork.send();
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -277,5 +437,39 @@ public class RequestState {
      */
     public void removeConnection(ClientId clientId){
         this.connections.remove(clientId);
+    }
+
+
+    private enum Status {
+
+        INITIAL(1),  // Initial status to obtain locks on keys
+        RUNNING(2),  // Running
+        WAITING(3),  // Waiting to obtain locks in some keys
+
+        COMPLETED(4),       // Is completed
+        NOT_COMPLETED(5),   // Still running but not completed
+        ERROR(6);           // Error
+
+        private final int status;
+
+        Status(int status) {
+            this.status = status;
+        }
+
+        public int getStatus() {
+            return status;
+        }
+
+        private final static Map<Integer, Status> map = new HashMap<>();
+
+        static {
+            for (Status s : Status.values()) {
+                map.put(s.getStatus(), s);
+            }
+        }
+
+        static Status getMessageType(int status) {
+            return map.get(status);
+        }
     }
 }

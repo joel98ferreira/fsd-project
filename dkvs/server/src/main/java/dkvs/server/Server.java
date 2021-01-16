@@ -7,9 +7,6 @@ import spullara.nio.channels.FutureServerSocketChannel;
 
 import java.io.IOException;
 import java.nio.channels.AsynchronousChannelGroup;
-import java.util.concurrent.TimeUnit;
-
-import static java.util.concurrent.Executors.defaultThreadFactory;
 
 public class Server {
 
@@ -37,7 +34,7 @@ public class Server {
        server.bind(serverAddress.getSocketAddress());
 
        // Start accepting new clients
-       new Connection(this.requestHandler).acceptNew(serverAddress, server);
+       new ClientAcceptor(this.requestHandler).acceptNew(serverAddress, server);
 
        // Start the server network
        this.serverNetwork.start(g, requestHandler);

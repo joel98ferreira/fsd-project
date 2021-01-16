@@ -48,6 +48,19 @@ public class Client {
 
         this.network.send(request).thenAccept(v -> {
             System.out.println("> Send the Get request to the server.");
+            this.network.receive().thenAccept(message -> {
+                if(message == null){
+                    // Close the connection
+                    network.close();
+                    System.out.println("> Connection closed");
+                    return;
+                }
+
+
+                System.out.println("> Received: " + message.getType());
+
+                acceptor.complete(message);
+            })
         });
 
         return response;

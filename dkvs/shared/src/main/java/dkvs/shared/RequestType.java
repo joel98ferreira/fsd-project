@@ -11,9 +11,8 @@ public enum RequestType {
     GET_REQUEST(4),  // Request done by client
     GET_EXECUTE(5),  // Get execute on the server that will receive this message
     GET_REPLY(6),    // Ack for the GET containing the map with values
-    PUT_LOCK(7),     // Explicit lock for all servers that are not part of the put request
-    PUT_UNLOCK(8),   // Explicit unlock for all servers that are not part of the put request
-    CLOCK_UPDATE(9); // Message type to inform a clock update
+    CLOCK_UPDATE(7), // Message type to inform a clock update
+    CLOCK(8);           // Send my clock to other peers
 
     private final int type;
 

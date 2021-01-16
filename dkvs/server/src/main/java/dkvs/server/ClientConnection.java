@@ -7,7 +7,6 @@ import dkvs.shared.*;
 import dkvs.shared.Connection;
 import spullara.nio.channels.FutureSocketChannel;
 
-import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -37,6 +36,7 @@ public class ClientConnection {
                 // Close the connection
                 network.close();
                 System.out.println("> Connection closed");
+                requestHandler.removeConnection(clientId);
                 return;
             }
 
@@ -47,18 +47,5 @@ public class ClientConnection {
         }).thenCompose(r -> read());
 
         return acceptor;
-    }
-
-    public void write(RequestType type, Object object) throws IOException {
-
-        Message message = new Message(new MessageId(), type, object);
-
-       CompletableFuture<Void> writer = network.send(message);
-
-       writer.thenAccept(vd -> {
-           System.out.println("Sent to " + network.toString());
-            //client.messageId++;
-            //write();
-      });
     }
 }

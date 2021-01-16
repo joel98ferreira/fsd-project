@@ -135,9 +135,7 @@ public class RequestHandler {
 
                 CompletableFuture<Void> req = this.client.put(keyValues);
 
-                // TODO colocar aqui exceptions
                 req.thenAccept(n -> {
-                    // TODO: loop até receber request reply
                     System.out.println("Put successful.");
                 });
             }

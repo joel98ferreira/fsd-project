@@ -18,10 +18,12 @@ import java.util.concurrent.CompletableFuture;
 
 public class ServerNetwork {
 
+    private final ServerId localServerId;
     private final Map<ServerId, ServerAddress> remoteServerAddresses;
     private final Map<ServerId, Network> remoteServersNetwork;
 
     public ServerNetwork(ServerConfig serverConfig) {
+        this.localServerId = Objects.requireNonNull(serverConfig.getLocalServerId());
         this.remoteServerAddresses = Objects.requireNonNull(serverConfig.getRemoteServers());
         this.remoteServersNetwork = new HashMap<>();
     }
@@ -109,5 +111,9 @@ public class ServerNetwork {
         });
 
         return acceptor;
+    }
+
+    public ServerId getLocalServerId() {
+        return localServerId;
     }
 }
