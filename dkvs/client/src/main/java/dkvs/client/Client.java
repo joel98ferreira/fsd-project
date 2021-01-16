@@ -9,7 +9,6 @@ import java.util.Collection;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
 
 public class Client {
 
@@ -49,24 +48,16 @@ public class Client {
         this.network.send(request).thenAccept(v -> {
             System.out.println("> Send the Get request to the server.");
             this.network.receive().thenAccept(message -> {
-                if(message == null){
-                    // Close the connection
-                    network.close();
-                    System.out.println("> Connection closed");
-                    return;
+                System.out.println("> Received the Get response!");
+                if (message.getType() == RequestType.GET_REPLY) {
+                    Map<Long, byte[]> map = (Map<Long, byte[]>) message.getContent();
+                    response.complete(map);
                 }
-
-
-                System.out.println("> Received: " + message.getType());
-
-                acceptor.complete(message);
-            })
+            });
         });
 
         return response;
     }
-
-    // TODO: Adicionar queue de mensagens e depois reenviar se não receber resposta num timeout definido
 
     public CompletableFuture<Void> put(Map<Long, byte[]> values) throws IOException {
 
@@ -77,49 +68,16 @@ public class Client {
 
         this.network.send(request).thenAccept(v -> {
             System.out.println("> Send the Put request to the server.");
-        }).thenCompose(r -> read());
-
-
+            this.network.receive().thenAccept(message -> {
+                System.out.println("> Received the Put response!");
+                System.out.println(message.getType());
+                if (message.getType() == RequestType.PUT_REPLY) {
+                    System.out.println("> Put executed successfully");
+                    response.complete(null);
+                }
+            });
+        });
 
         return response;
     }
-
-    public CompletableFuture<Message> read() {
-        CompletableFuture<Message> acceptor = new CompletableFuture<>();
-
-        this.network.receive().thenAccept(message -> {
-            if(message == null){
-                // Close the connection
-                network.close();
-                System.out.println("> Connection closed");
-                return;
-            }
-
-
-            System.out.println("> Received: " + message.getType());
-
-            acceptor.complete(message);
-        }).thenCompose(r -> read());
-
-        return acceptor;
-    }
-
-    /*
-            this.network.receive().thenAccept(message -> {
-            System.out.println("> Received the Put response!");
-            System.out.println(message.getType());
-            if (message.getType() == RequestType.PUT_REPLY){
-                System.out.println("> Put executed successfully");
-                response.complete(null);
-            }
-        });
-
-                    this.network.receive().thenAccept(message -> {
-                System.out.println("> Received the Get response!");
-                if (message.getType() == RequestType.GET_REPLY){
-                    Map<Long, byte[]> map = (Map<Long, byte[]>) message.getContent();
-                    response.complete(map);
-                }
-            });
-     */
 }

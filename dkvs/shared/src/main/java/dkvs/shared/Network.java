@@ -48,6 +48,8 @@ public class Network {
 
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
 
+        byteBuffer.clear();
+
         socket.read(byteBuffer).thenAccept(rd -> {
             if (rd == -1) {
                 acceptor.complete(null);

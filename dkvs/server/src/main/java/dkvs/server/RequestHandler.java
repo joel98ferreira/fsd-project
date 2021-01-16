@@ -58,7 +58,6 @@ public class RequestHandler {
             if (DEBUG) System.out.println("> Received a message from client: " + clientId + " with id: " + message.getId());
         }else {
             // Request from the server network add the clock and calculate the max clock for this server
-            requestState.newClock(clientId, message.getContent());
             if (DEBUG) System.out.println("> Received the response to a request in the Server Network from: " + clientId.getClientId() + " with id: " + message.getId());
         }
 
@@ -97,7 +96,6 @@ public class RequestHandler {
                 break;
             default:         // Unknown message type
                 if (DEBUG) System.out.println("> Unknown Request Type!");
-                // TODO: Throw exception
                 break;
         }
     }
@@ -123,28 +121,43 @@ public class RequestHandler {
             // Insert the put request in the currently running requests
             requestState.newRequest(clientId, message.getId(), mappedByServerPut.keySet());
 
+            // Local event
+            requestState.updateMyLogicalClock(ScalarLogicalClock.Event.LOCAL, null);
+
             for (Map.Entry<ServerId, Map<Long, byte[]>> serverPut : mappedByServerPut.entrySet()){
 
                 // Verify if any put request is to the current server
                 if (serverPut.getKey().equals(this.localServerId)){
                     Map<Long, byte[]> myPutReq = mappedByServerPut.get(this.localServerId);
 
-                    // TODO: VALIDATE IF I CAN ENTER THE QUEUE
+                    // Determine the Key set that are not directly to the PUT EXECUTE server, so it can lock on other keys
+                    // to known when it receives the PUT_REPLY that it can finish the transaction and make the previous version
+                    // values deleted.
+                    Collection<Long> otherPutKeys = new ArrayList<>(values.keySet());
+                    otherPutKeys.removeAll(myPutReq.keySet());
 
+                    Message m = new Message(message.getId(), RequestType.PUT_EXECUTE,
+                            new ServerRequestMessageContent(
+                                    localServerId,
+                                    requestState.getMyLogicalClock(),
+                                    new AbstractMap.SimpleEntry<>(myPutReq, otherPutKeys)
+                            )
+                    );
 
-                    // Insert the values in my key value store
-                    this.keyValueStore.put(myPutReq);
-
-                    // Update the status of the put reply message, since this put request was to the current server
-                    handlePutRequestUpdate(message.getId(), serverPut.getKey());
-
+                    if (requestState.isClockValidToInsertInQueue(requestState.getMyLogicalClock())){
+                        // Update the status of the put message, since this put request was to the current server
+                        handlePutExecuteUpdate(m, values.keySet(), myPutReq);
+                    } else {
+                        if (DEBUG) System.out.println("> Clocks not valid, inserting in waiting to be process when clocks are valid.");
+                        requestState.insertInWaitingToEnterQueue(message);
+                    }
                 } else { // Send the request to the corresponding server
 
                     // Determine the Key set that are not directly to the PUT EXECUTE server, so it can lock on other keys
-                    // to known when it receives the PUT UNLOCK that it can finish the transaction and make the previous version
+                    // to known when it receives the PUT_REPLY that it can finish the transaction and make the previous version
                     // values deleted.
                     Collection<Long> otherPutKeys = new ArrayList<>(values.keySet());
-                    otherPutKeys.removeAll(serverPut.getValue().entrySet());
+                    otherPutKeys.removeAll(serverPut.getValue().keySet());
 
                     // Create a new message with PUT_EXECUTE type, the PUT_EXECUTE message has an implicit LOCK on that key set
                     // This message is sent with my current logical clock, the values that I want to insert and lock in that server
@@ -153,6 +166,7 @@ public class RequestHandler {
                     // all unlocks from all of the keys of that transaction.
                     Message putExecute = new Message(message.getId(), RequestType.PUT_EXECUTE,
                             new ServerRequestMessageContent(
+                                    localServerId,
                                     requestState.getMyLogicalClock(),
                                     new AbstractMap.SimpleEntry<>(serverPut.getValue(), otherPutKeys)
                             )
@@ -161,57 +175,24 @@ public class RequestHandler {
                     if (DEBUG) System.out.println("> Sending PUT EXECUTE to: " + serverPut.getKey().toString());
 
                     // Send the message with PUT_EXECUTE to the server
-                    this.serverNetwork.send(serverPut.getKey(), putExecute, this);
+                    this.serverNetwork.send(serverPut.getKey(), putExecute);
 
                     // Update my logical clock with a send event
                     this.requestState.updateMyLogicalClock(ScalarLogicalClock.Event.SEND, null);
                 }
             }
 
-            // Send the PUT LOCK to other peers that are currently not in the PUT EXECUTE servers set
+            // Send the CLOCK UPDATE message to other peers that are currently not in the PUT EXECUTE servers set
             List<ServerId> remoteServersIdsToSendLock = this.serverNetwork.getRemoteServersIds();
             remoteServersIdsToSendLock.removeAll(mappedByServerPut.keySet());
 
             if (remoteServersIdsToSendLock.size() != 0){
-                for (ServerId serverId : remoteServersIdsToSendLock){
-
-                    // Collection with all keys that are currently running in the transaction
-                    Collection<Long> putKeys = new ArrayList<>(values.keySet());
-
-                    // Create a new message with CLOCK_UPDATE type, the CLOCK_UPDATE is just sent for all other
-                    // servers that are not included in the transaction. This will be useful since after other
-                    // server receives a CLOCK_UPDAT
-                    Message putLock = new Message(message.getId(), RequestType.CLOCK_UPDATE,
-                            new ServerRequestMessageContent(
-                                    requestState.getMyLogicalClock(),
-                                    putKeys
-                            )
-                    );
-
-                    if (DEBUG) System.out.println("> Sending PUT LOCK to: " + serverId.toString());
-
-                    // Send the message with PUT_LOCK to the server
-                    this.serverNetwork.send(serverId, putLock, this);
-
-                    // Update my logical clock with send event
-                    this.requestState.updateMyLogicalClock(ScalarLogicalClock.Event.SEND, null);
-                }
+                sendClockUpdate(remoteServersIdsToSendLock);
             }
-
-
-
-
-            // TODO: ESPERAR PELA RESPOSTA 8SEGUNDOS E CASO NAO RECEBER MANDAR ERRO
-            // es.schedule(() -> {
-
-              // verificaPedidoGet(pg.id);
-
-            //}, Config.TIMEOUT, TimeUnit.SECONDS);
-
 
         } catch (Exception e){
             System.err.println("Error in PUT REQUEST");
-            // TODO: Thrown unknown request
+            e.printStackTrace();
         }
     }
 
@@ -229,14 +210,14 @@ public class RequestHandler {
 
             AbstractMap.SimpleEntry<Map<Long, byte[]>, Collection<Long>> putExecuteInfo = (AbstractMap.SimpleEntry<Map<Long, byte[]>, Collection<Long>>) requestMessageContent.getContent();
 
-            // Update the received clock from the client
+            // Update the received clock from the client and my clock
             requestState.newClock(clientId, requestMessageContent.getLogicalClock());
 
-            // Update my logical clock
-            requestState.updateMyLogicalClock(ScalarLogicalClock.Event.RECEIVE, requestMessageContent.getLogicalClock());
+            // Process other requests waiting to enter the queue since we received a new clock
+            this.requestState.processWaitingToEnterInQueue();
 
-            // Validate if the received message can be considered to insert in the queue
-            boolean canExecuteRequest =  requestState.isClockValidToInsertInQueue(requestMessageContent.getLogicalClock());
+            // Validate if the received message can be considered to be insert in the queue
+            boolean canExecuteRequest = requestState.isClockValidToInsertInQueue(requestMessageContent.getLogicalClock());
 
             if (canExecuteRequest){
 
@@ -244,82 +225,87 @@ public class RequestHandler {
                 Collection<Long> lockedKeys = putExecuteInfo.getValue();
                 lockedKeys.addAll(putExecuteInfo.getKey().keySet());
 
-                // Insert in the locking queue
-                this.requestState.insertInLockingQueue(message.getId(), lockedKeys);
-
-                // TODO: am i the first?
-                // Update the values in the Key Value Store and save the previous ones
-                this.keyValueStore.putPrepare(putExecuteInfo.getKey());
-
-                // Unlock my keys
-                this.requestState.unlockKeys(message.getId(), putExecuteInfo.getKey().keySet());
-
-                if (DEBUG) System.out.println("> PUT Prepare is done, waiting for unlocks to complete PUT.");
-                if (DEBUG) System.out.println("> Sending PUT REPLY (implicit unlock) to everyone.");
-
-
-                // Send a message acknowledging the put execution successfully
-                Message response = new Message(message.getId(), RequestType.PUT_REPLY, new ServerResponseMessageContent(this.localServerId, 200,  null)); // 200 - OK
-                requestState.sendRequestResponse(clientId, response);
-
-
+                // Handle the put execute update
+                handlePutExecuteUpdate(message, lockedKeys, putExecuteInfo.getKey());
             } else {
-                // TODO: INSERIR NA QUEUE DE PENDENTES
+                if (DEBUG) System.out.println("> Clocks not valid, inserting in waiting to be process when clocks are valid.");
+                requestState.insertInWaitingToEnterQueue(message);
             }
         } catch (Exception e){
             System.err.println("Error in PUT EXECUTE");
             e.printStackTrace();
-            // TODO: Thrown unknown request
         }
     }
 
     /**
-     * Method that handles the ACK from the server where the PUT Execute message was sent to.
-     * @param message The ACK message for the PUT Execute.
+     * Auxiliary method to be used in put execute.
+     * @param message The received message put execute.
+     * @param lockedKeys All of the locked keys.
+     * @param values The map to execute the put execute.
+     */
+    private void handlePutExecuteUpdate(Message message, Collection<Long> lockedKeys, Map<Long, byte[]> values) throws IOException {
+        // Insert this request in the priority queue
+        RequestState.Status status = requestState.insertInQueue(message, lockedKeys);
+
+        if (status == RequestState.Status.WAITING){
+            if (DEBUG) System.out.println("> Found dependencies, waiting to obtain lock in some keys...");
+            return;
+        } else {
+            if (DEBUG) System.out.println("> Obtained all locks with success! Running PUT EXECUTE!");
+        }
+
+        // Update the values in the Key Value Store and save the previous ones
+        this.keyValueStore.putPrepare(values);
+        if (DEBUG) System.out.println("> PUT Prepare is done.");
+
+        // Update the received write confirmation
+        RequestState.Status s = requestState.receivedWriteConfirmation(message.getId(), values.keySet());
+
+        // Send message to all servers
+        if (DEBUG) System.out.println("> Sending PUT REPLY (implicit unlock) to everyone.");
+        this.requestState.sendPutReplyToAll(message.getId(), values.keySet());
+
+        if (s == RequestState.Status.COMPLETED){
+            requestState.processCompletedRequest(message.getId());
+        }
+    }
+
+    /**
+     * Method that handles a PUT Reply, this PUT REPLY has an implicit confirmation in the keys
+     * that are stored in the running transactions, when we confirm that all of the keys in the
+     * transactions already received a reply then we can simply unlock all keys and let others
+     * access the new version.
+     * @param message The PUT REPLY message.
      */
     private void handlePutReply(final Message message){
         try {
             ServerResponseMessageContent putInfo = (ServerResponseMessageContent) message.getContent();
+            Collection<Long> confirmedKeys = (Collection<Long>) putInfo.getContent();
+
+            // Update my logical clock
+            this.requestState.newClock(new ClientId(putInfo.getServerId().toString()), putInfo.getLogicalClock());
+
+            // Process other requests waiting to enter the queue since we received a new clock
+            this.requestState.processWaitingToEnterInQueue();
 
             if (DEBUG) System.out.println("> PUT REPLY from: " + putInfo.getServerId().toString());
 
             if (putInfo.getStatusCode() == 200){
-                // Handle the put reply message and update the request state
-                handlePutRequestUpdate(message.getId(), putInfo.getServerId());
-            }else{
-                // TODO: Throw error
+                // Update the received write confirmation
+                RequestState.Status s = requestState.receivedWriteConfirmation(message.getId(), confirmedKeys);
+
+                if (s == RequestState.Status.COMPLETED){
+                    if (DEBUG) System.out.println("> PUT REQUEST is complete, sending result to client.");
+                    requestState.processCompletedRequest(message.getId());
+                    requestState.removeRequest(message.getId());
+                } else {
+                    if (DEBUG) System.out.println("> PUT REQUEST is not completed, waiting for response from the contacted servers.");
+                }
             }
 
         } catch (Exception e){
             System.err.println("Error in PUT REPLY");
-            // TODO: Thrown unknown request
-        }
-    }
-
-    /**
-     * Method that is used when receiving a put reply, it updates the put reply in the the request
-     * state and verifies if the request is completed. If it's completed then sends a confirmation
-     * message to the client and removes the request from the currently running requests.
-     * @param messageId The put reply message UUID.
-     * @param serverId The server id of the server that replied.
-     * @throws IOException
-     */
-    private void handlePutRequestUpdate(final MessageId messageId, final ServerId serverId) throws IOException {
-        // Update the map with info saying that the request for this server was satisfied
-        requestState.newReply(messageId, serverId);
-
-        // Verify if the put request is completed
-        if (requestState.isRequestComplete(messageId)){
-            if (DEBUG) System.out.println("> PUT REQUEST is complete, sending result to client.");
-
-            // Send a success message to the client
-            Message response = new Message(messageId, RequestType.PUT_REPLY, 200);
-            requestState.sendOriginalRequestResponse(messageId, response);
-
-            // Remove the request
-            requestState.removeRequest(messageId);
-        } else {
-            if (DEBUG) System.out.println("> PUT REQUEST is not completed, waiting for response from the contacted servers.");
+            e.printStackTrace();
         }
     }
 
@@ -343,6 +329,8 @@ public class RequestHandler {
 
             // Insert the get request in the currently running requests
             requestState.newRequest(clientId, message.getId(), mappedByServerGet.keySet());
+
+            requestState.updateMyLogicalClock(ScalarLogicalClock.Event.LOCAL, null);
 
             for (Map.Entry<ServerId, Collection<Long>> serverGet : mappedByServerGet.entrySet()){
 
@@ -373,7 +361,7 @@ public class RequestHandler {
                     );
 
                     // Send the message to the server
-                    this.serverNetwork.send(serverGet.getKey(), getExecute, this);
+                    this.serverNetwork.send(serverGet.getKey(), getExecute);
 
                     // Update my logical clock
                     requestState.updateMyLogicalClock(ScalarLogicalClock.Event.SEND, null);
@@ -387,6 +375,7 @@ public class RequestHandler {
 
         } catch (Exception e){
             System.err.println("Error in GET REQUEST");
+            e.printStackTrace();
         }
     }
 
@@ -402,11 +391,10 @@ public class RequestHandler {
 
             Collection<Long> keys = (Collection<Long>) requestMessageContent.getContent();
 
-            // Update the received clock from the click
             requestState.newClock(clientId, requestMessageContent.getLogicalClock());
 
-            // Update my logical clock
-            requestState.updateMyLogicalClock(ScalarLogicalClock.Event.RECEIVE, requestMessageContent.getLogicalClock());
+            // Process other requests waiting to enter the queue since we received a new clock
+            this.requestState.processWaitingToEnterInQueue();
 
             // Obtain the values from the key value store
             Map<Long, byte[]> values = this.keyValueStore.get(keys);
@@ -435,6 +423,7 @@ public class RequestHandler {
 
         } catch (Exception e){
             System.err.println("Error in GET EXECUTE!");
+            e.printStackTrace();
         }
     }
 
@@ -446,11 +435,10 @@ public class RequestHandler {
         try {
             ServerResponseMessageContent getInfo = (ServerResponseMessageContent) message.getContent();
 
-            // Update the received clock from the click
-            requestState.newClock(new ClientId(getInfo.getServerId().toString()), getInfo.getLogicalClock());
+            this.requestState.newClock(new ClientId(getInfo.getServerId().toString()), getInfo.getLogicalClock());
 
-            // Update my logical clock
-            requestState.updateMyLogicalClock(ScalarLogicalClock.Event.RECEIVE, getInfo.getLogicalClock());
+            // Process other requests waiting to enter the queue since we received a new clock
+            this.requestState.processWaitingToEnterInQueue();
 
             if (DEBUG) System.out.println("> GET REPLY from: " + getInfo.getServerId().toString());
 
@@ -511,41 +499,27 @@ public class RequestHandler {
     public void handleClockUpdate(Message message) throws IOException {
         ServerResponseMessageContent clockupdate = (ServerResponseMessageContent) message.getContent();
 
-        // Update the received clock from the client
-        requestState.newClock(new ClientId(clockupdate.getServerId().toString()), clockupdate.getLogicalClock());
+        if (DEBUG) System.out.println("> Updating my logical clock.");
+        this.requestState.newClock(new ClientId(clockupdate.getServerId().toString()), clockupdate.getLogicalClock());
 
-        // Update my logical clock
-        requestState.updateMyLogicalClock(ScalarLogicalClock.Event.RECEIVE, clockupdate.getLogicalClock());
+        // Process other requests waiting to enter the queue since we received a new clock
+        this.requestState.processWaitingToEnterInQueue();
 
-        // Send my clock to all other peers
-        for (ServerId serverId : this.serverNetwork.getRemoteServersIds()){
-            Message myClock = new Message(new MessageId(), RequestType.CLOCK,
-                    new ServerRequestMessageContent(
-                            localServerId,
-                            requestState.getMyLogicalClock(),
-                            null
-                    )
-            );
-
-            this.serverNetwork.send(serverId, myClock, this);
-
-            // Update my logical clock
-            this.requestState.updateMyLogicalClock(ScalarLogicalClock.Event.SEND, null);
-        }
+        // Send my clock to other peers
+        sendClockUpdate(serverNetwork.getRemoteServersIds());
     }
 
     /**
      * Receive a clock update from other peer.
      * @param message The message.
      */
-    public void handleClock(Message message) {
+    public void handleClock(Message message) throws IOException {
         ServerRequestMessageContent clock = (ServerRequestMessageContent) message.getContent();
 
-        // Update the received clock from the client
-        requestState.newClock(new ClientId(clock.getServerId().toString()), clock.getLogicalClock());
+        this.requestState.newClock(new ClientId(clock.getServerId().toString()), clock.getLogicalClock());
 
-        // Update my logical clock
-        requestState.updateMyLogicalClock(ScalarLogicalClock.Event.RECEIVE, clock.getLogicalClock());
+        // Process other requests waiting to enter the queue since we received a new clock
+        this.requestState.processWaitingToEnterInQueue();
     }
 
     /**
@@ -569,7 +543,7 @@ public class RequestHandler {
                 if (DEBUG) System.out.println("> Sending CLOCK UPDATE to: " + serverId.toString());
 
                 // Send the message with CLOCK UPDATE to the server
-                this.serverNetwork.send(serverId, clockUpdate, this);
+                this.serverNetwork.send(serverId, clockUpdate);
 
                 // Update my logical clock with send event
                 this.requestState.updateMyLogicalClock(ScalarLogicalClock.Event.SEND, null);

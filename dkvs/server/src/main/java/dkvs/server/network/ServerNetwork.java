@@ -46,7 +46,7 @@ public class ServerNetwork {
                 remoteServersNetwork.put(remoteServer.getKey(), Objects.requireNonNull(network));
 
                 // Start receiving messages
-                //receive(remoteServer.getKey(), network, requestHandler);
+                receive(remoteServer.getKey(), network, requestHandler);
             });
         }
     }
@@ -57,6 +57,8 @@ public class ServerNetwork {
      */
     public static void registerServerPayloadsAndStartNetwork(Network network){
         network.registerPayloadType(ServerResponseMessageContent.class);
+        network.registerPayloadType(ServerRequestMessageContent.class);
+        network.registerPayloadType(AbstractMap.SimpleEntry.class);
         network.registerPayloadType(ScalarLogicalClock.class);
         network.registerPayloadType(ServerId.class);
         network.start();
@@ -75,13 +77,11 @@ public class ServerNetwork {
      * @param message The message to send to the known server.
      * @throws IOException
      */
-    public void send(final ServerId serverId, final Message message, final RequestHandler requestHandler) throws IOException {
+    public void send(final ServerId serverId, final Message message) throws IOException {
         if (remoteServersNetwork.containsKey(serverId)){
             remoteServersNetwork.get(serverId).send(message).thenAccept(v -> {
                 System.out.println("> Sent message " + message.getId() + " with type " + message.getType() +
                         " to: " + serverId.toString() + " with success!");
-
-                receive(serverId, remoteServersNetwork.get(serverId), requestHandler);
             });
         }
     }
@@ -107,7 +107,11 @@ public class ServerNetwork {
             System.out.println("> Received message with id " + m.getId() + " and type " + m.getType() +
                     " with success from " + serverId.toString() + "!");
 
-            requestHandler.handleMessage(m, clientId, remoteServersNetwork.get(serverId));
+            try {
+                requestHandler.handleMessage(m, clientId, remoteServersNetwork.get(serverId));
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
         });
 
         return acceptor;

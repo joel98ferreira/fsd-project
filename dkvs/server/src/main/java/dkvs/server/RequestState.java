@@ -14,38 +14,27 @@ import dkvs.shared.RequestType;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentSkipListSet;
-import java.util.concurrent.PriorityBlockingQueue;
 
 public class RequestState {
 
-    // Comparator for the messages waiting to be processed and for the messages in the locking queue
-    //private static final Comparator<Message> MESSAGE_COMPARATOR =
-      //      Comparator
-        //            .comparingLong(Message::getContent)
-          //          .thenComparing(Message::getServerId);
-
     // This queue represents the priority of the currently running put requests, status could be initial
-    // (acquiring locks), waiting to acquire locks or waiting
+    // (acquiring locks), waiting to acquire locks or waiting, this "queue" is sorted by the logical clocks.
     private final ConcurrentSkipListSet<AbstractMap.SimpleEntry<Message, Status>> priorityQueue;
 
-    // Ao meter na fila, valido se ha dependencias nos que estao a frente com estao WAITING
+    // Queue containing the messages that tried to be inserted in the queue but the received clock is higher
+    // or equal than the minimum of all processes, this is sorted by the logical clocks, so the first element
+    // is always the element with the less clock.
+    private final ConcurrentSkipListSet<Message> waitingToBeInsertedInQeue;
 
-    // Remover da fila alguma mensamge, removo mensagem e começo a processar à cabeça os que estão waiting
-    // Removo da fila vou remover os locks deste server
-
+    // Map where the key is the key corresponding to this server and the boolean representing if this key
+    // is locked or no
     private final Map<Long, Boolean> locksOnKeysInThisServer;
 
-    // Sempre que recebo mensagem com relogios corro a queue mensanes para serem inseridas na queue e insiro,
-
-    // Queue containing the messages that tried to acquire the lock but the received clock is higher or equal than the minimum of each 3
-    private final Queue<Message> waitingToBeInsertedInQeue;
-
-    // This map represents if it has already received the reply with the unlock for a key.
-    // Even if it receives the unlock in one key the lock is only fully released when the transaction
+    // This map represents if it has already received the reply with the write confirmation for a key.
+    // Even if it receives the write confirmation in one key the lock is only fully released when the transaction
     // that has the lock in that key releases all locks in it's keys, so we can ensure atomicity.
-    private Map<MessageId, Map<Long, Boolean>> transactionConfirmations;
+    private final Map<MessageId, Map<Long, Boolean>> transactionConfirmations;
 
     // Represents this server logical clock
     private final ScalarLogicalClock myLogicalClock;
@@ -61,7 +50,7 @@ public class RequestState {
     // and the value is the map that is being built based on the answer received from the other servers
     private final Map<MessageId, Map<Long, byte[]>> getRequests;
 
-    // This map represents the currently running requests (PUT or GET), where the Id is the request UUID,
+    // This map represents the currently running requests (GET), where the Id is the request UUID,
     // and the value is pair that contains in the left the client uuid of the original client, the one
     // that initially made the request, at the right a map containing the servers which we need to
     // contact in order to return a response for the client as value we have a boolean that represents
@@ -87,8 +76,8 @@ public class RequestState {
         Set<ServerId> remoteServers = config.getRemoteServers().keySet();
         remoteServers.forEach(server -> this.logicalClocksByClientId.put(new ClientId(server.toString()), new ScalarLogicalClock()));
 
-        this.priorityQueue = new ConcurrentSkipListSet<>();
-        this.waitingToBeInsertedInQeue = new PriorityBlockingQueue<>();
+        this.priorityQueue = new ConcurrentSkipListSet<>(new PriorityQueueMessageComparator());
+        this.waitingToBeInsertedInQeue = new ConcurrentSkipListSet<>(new MessageComparator());
         this.transactionConfirmations = new ConcurrentHashMap<>();
         this.locksOnKeysInThisServer = new ConcurrentHashMap<>();
 
@@ -113,17 +102,17 @@ public class RequestState {
     /**
      * Method used when receiving a new clock update.
      * @param clientId The client id that owns the clock.
-     * @param contentMessage object.
+     * @param receivedClock The received clock
      */
-    public void newClock(ClientId clientId, Object contentMessage){
-        ServerResponseMessageContent serverResponse = (ServerResponseMessageContent) contentMessage;
-        ScalarLogicalClock receivedClock = serverResponse.getLogicalClock();
-
+    public void newClock(ClientId clientId, ScalarLogicalClock receivedClock){
         if (logicalClocksByClientId.containsKey(clientId)){
             logicalClocksByClientId.replace(clientId, receivedClock);
         } else {
             logicalClocksByClientId.put(clientId, receivedClock);
         }
+
+        // Update my logical clock
+        updateMyLogicalClock(ScalarLogicalClock.Event.RECEIVE, receivedClock);
     }
 
     /**
@@ -193,6 +182,73 @@ public class RequestState {
     }
 
     /**
+     * This method receives a message that don't have the clocks valid yet and insert
+     * this message in the queue to enter the transactions queue once the clock is satisfied.
+     * @param message Message to insert in queue.
+     */
+    public void insertInWaitingToEnterQueue(Message message){
+        this.waitingToBeInsertedInQeue.add(message);
+    }
+
+    /**
+     * Method that once we receive a logical clock from other process verifies if a message
+     * currently in a waiting to enter the queue can be moved to the queue.
+     */
+    public void processWaitingToEnterInQueue() throws IOException {
+
+        for (Message m : waitingToBeInsertedInQeue){
+            ServerRequestMessageContent requestMessageContent = (ServerRequestMessageContent) m.getContent();
+            processToEnterInQueue(m, requestMessageContent);
+        }
+    }
+
+    /**
+     * Process one process to enter the queue.
+     * @param m The message.
+     * @param requestMessageContent The message content.
+     * @throws IOException
+     */
+    private void processToEnterInQueue(Message m, ServerRequestMessageContent requestMessageContent) throws IOException {
+        if (isClockValidToInsertInQueue(requestMessageContent.getLogicalClock())){
+            System.out.println("> Processing the requests in the waiting to enter queue!");
+
+            AbstractMap.SimpleEntry<Map<Long, byte[]>, Collection<Long>> putExecuteInfo = (AbstractMap.SimpleEntry<Map<Long, byte[]>, Collection<Long>>) requestMessageContent.getContent();
+
+            // Obtain all keys of the transaction
+            Collection<Long> lockedKeys = putExecuteInfo.getValue();
+            lockedKeys.addAll(putExecuteInfo.getKey().keySet());
+
+            // Insert this request in the priority queue
+            Status status = insertInQueue(m, lockedKeys);
+
+            if (status == RequestState.Status.WAITING){
+                System.out.println("> Found dependencies, waiting to obtain lock in some keys...");
+                return;
+            } else {
+                System.out.println("> Obtained all locks with success! Running PUT EXECUTE!");
+            }
+
+            // Update the values in the Key Value Store and save the previous ones
+            this.keyValueStore.putPrepare(putExecuteInfo.getKey());
+            System.out.println("> PUT Prepare is done.");
+
+            // Update the received write confirmation
+            RequestState.Status s = receivedWriteConfirmation(m.getId(), putExecuteInfo.getKey().keySet());
+
+            // Send message to all servers
+            System.out.println("> Sending PUT REPLY (implicit unlock) to everyone.");
+            sendPutReplyToAll(m.getId(), putExecuteInfo.getKey().keySet());
+
+            if (s == RequestState.Status.COMPLETED){
+                processCompletedRequest(m.getId());
+            }
+
+            // Remove from the waiting to enter in queue
+            waitingToBeInsertedInQeue.removeIf(ms -> ms.getId().equals(m.getId()));
+        }
+    }
+
+    /**
      * Method that once receives a write confirmation with put prepare on some keys in a
      * running transaction marks them as done, if it completes then sends result to client.
      * @param messageId The messageId of the transaction.
@@ -231,54 +287,114 @@ public class RequestState {
 
         this.transactionConfirmations.remove(messageId);
         this.priorityQueue.removeIf(s -> s.getKey().getId().equals(messageId));
-
-
-
     }
 
-    private MessageId processNextMessageToAcquireLocks(){
+    /**
+     * Method that processes the next message in the queue.
+     */
+    private void processNextMessageToAcquireLocks() throws IOException {
         for (AbstractMap.SimpleEntry<Message, Status> t : priorityQueue){
             if (t.getValue() == Status.WAITING){
                 ServerRequestMessageContent requestMessageContent = (ServerRequestMessageContent) t.getKey().getContent();
                 AbstractMap.SimpleEntry<Map<Long, byte[]>, Collection<Long>> putInfo = (AbstractMap.SimpleEntry<Map<Long, byte[]>, Collection<Long>>) requestMessageContent.getContent();
                 Collection<Long> keysToAcquireLock = putInfo.getKey().keySet();
 
+                boolean canBeProcessed = true;
+
                 for (Long keyToAcquireLock : keysToAcquireLock) {
-                    if (!(locksOnKeysInThisServer.containsKey(keyToAcquireLock) &&
+                    if (locksOnKeysInThisServer.containsKey(keyToAcquireLock) &&
                             locksOnKeysInThisServer.get(keyToAcquireLock) != null &&
-                            locksOnKeysInThisServer.get(keyToAcquireLock).equals(true))) {
+                            locksOnKeysInThisServer.get(keyToAcquireLock).equals(true)) {
 
-                        // Insert with status running
-                        priorityQueue.add(new AbstractMap.SimpleEntry<>(t.getKey(), Status.RUNNING));
+                        canBeProcessed = false;
+                    }
+                }
 
-                        // Remove from the queue
-                        priorityQueue.removeIf(s -> s.getKey().getId().equals(t.getKey().getId()) && s.getValue() == Status.WAITING);
+                if (canBeProcessed){
+                    // Insert with status running
+                    priorityQueue.add(new AbstractMap.SimpleEntry<>(t.getKey(), Status.RUNNING));
 
-                        // Acquire locks
-                        for (Long keyToLock : keysToAcquireLock){
-                            this.locksOnKeysInThisServer.put(keyToLock, true);
-                        }
+                    // Remove from the queue
+                    priorityQueue.removeIf(s -> s.getKey().getId().equals(t.getKey().getId()) && s.getValue() == Status.WAITING);
 
-                        // Prepare the PUT
-                        keyValueStore.putPrepare(putInfo.getKey());
+                    // Acquire locks
+                    for (Long keyToLock : keysToAcquireLock){
+                        this.locksOnKeysInThisServer.put(keyToLock, true);
+                    }
 
-                        // Mark as done
-                        Status s = receivedWriteConfirmation(t.getKey().getId(), putInfo.getKey().keySet());
+                    // Prepare the PUT
+                    keyValueStore.putPrepare(putInfo.getKey());
 
-                        if (s == Status.COMPLETED){
+                    // Mark as done
+                    Status s = receivedWriteConfirmation(t.getKey().getId(), putInfo.getKey().keySet());
 
-                        } else if (s == Status.NOT_COMPLETED){
-                            for (ServerId serverId : serverNetwork.getRemoteServersIds()){
-                                Message putReply = new Message(
-                                        t.getKey().getId(),
-                                        RequestType.PUT_REPLY,
-                                        new ServerResponseMessageContent(this.serverNetwork.getLocalServerId(), 200,  null)); // 200 - OK
-                                serverNetwork.send();
-                            }
-                        }
+                    // Send message to all servers
+                    this.sendPutReplyToAll(t.getKey().getId(), putInfo.getKey().keySet());
+
+                    if (s == Status.COMPLETED){
+                        processCompletedRequest(t.getKey().getId());
+                    } else if (s == Status.NOT_COMPLETED){
+                        return;
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Completed request process, do the put commit on the keys.
+     * @param messageId Message id to commit.
+     */
+    public void processCompletedRequest(MessageId messageId) throws IOException {
+
+        // Commit PUT
+        this.keyValueStore.commitPut(this.transactionConfirmations.get(messageId).keySet());
+
+        // Verify if I have the client who originally made this request or if it was just a put reply
+        if (this.serverRequests.containsKey(messageId)){
+
+            System.out.println("> PUT REQUEST is complete, sending result to client.");
+
+            // Send a success message to the client
+            Message response = new Message(messageId, RequestType.PUT_REPLY, 200);
+            sendOriginalRequestResponse(messageId, response);
+
+            // Remove the request
+            removeRequest(messageId);
+        }
+
+        // Unlock keys
+        unlockKeys(messageId);
+
+        // Process next request in queue
+        processNextMessageToAcquireLocks();
+    }
+
+    /**
+     * Method that given a message id sends a put reply to all other servers
+     * @param messageId Message id.
+     * @param putPrepareKeys The keys that were written in this server.
+     */
+    public void sendPutReplyToAll(MessageId messageId, Collection<Long> putPrepareKeys) throws IOException {
+        // Send put reply to all other servers
+        for (ServerId serverId : serverNetwork.getRemoteServersIds()){
+
+            Message putReply = new Message(
+                    messageId,
+                    RequestType.PUT_REPLY,
+                    new ServerResponseMessageContent(
+                            this.serverNetwork.getLocalServerId(),
+                            myLogicalClock,
+                            200,
+                            putPrepareKeys
+                    )
+            );
+
+            // Send the put reply to server
+            serverNetwork.send(serverId, putReply);
+
+            // Update logical clock
+            updateMyLogicalClock(ScalarLogicalClock.Event.SEND, null);
         }
     }
 
@@ -439,8 +555,7 @@ public class RequestState {
         this.connections.remove(clientId);
     }
 
-
-    private enum Status {
+    public enum Status {
 
         INITIAL(1),  // Initial status to obtain locks on keys
         RUNNING(2),  // Running
@@ -472,4 +587,23 @@ public class RequestState {
             return map.get(status);
         }
     }
+
+    private static class PriorityQueueMessageComparator implements Comparator<AbstractMap.SimpleEntry<Message, Status>> {
+        @Override
+        public int compare(AbstractMap.SimpleEntry<Message, Status> o1, AbstractMap.SimpleEntry<Message, Status> o2) {
+            ServerRequestMessageContent msg1 = (ServerRequestMessageContent) o1.getKey().getContent();
+            ServerRequestMessageContent msg2 = (ServerRequestMessageContent) o2.getKey().getContent();
+            return msg1.compareTo(msg2);
+        }
+    };
+
+
+    private static class MessageComparator implements Comparator<Message> {
+        @Override
+        public int compare(Message o1, Message o2) {
+            ServerRequestMessageContent msg1 = (ServerRequestMessageContent) o1.getContent();
+            ServerRequestMessageContent msg2 = (ServerRequestMessageContent) o2.getContent();
+            return msg1.compareTo(msg2);
+        }
+    };
 }

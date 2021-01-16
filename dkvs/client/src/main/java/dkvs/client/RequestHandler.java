@@ -12,6 +12,7 @@ import java.util.stream.Collectors;
 public class RequestHandler {
 
     private final Client client;
+    private final RequestState requestState;
 
     private static final Pattern COMMAND_PATTERN = Pattern.compile(
             "^\\s*(?<command>\\w*)(?<args>\\s*.*)$"
@@ -21,6 +22,7 @@ public class RequestHandler {
 
     public RequestHandler(Client client, BufferedReader in) {
         this.client = Objects.requireNonNull(client);
+        this.requestState = new RequestState();
         this.in = in;
     }
 

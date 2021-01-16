@@ -7,6 +7,7 @@ import dkvs.shared.*;
 import dkvs.shared.Connection;
 import spullara.nio.channels.FutureSocketChannel;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -41,7 +42,11 @@ public class ClientConnection {
             }
 
             // Handle the received message
-            this.requestHandler.handleMessage(message, this.clientId, network);
+            try {
+                this.requestHandler.handleMessage(message, this.clientId, network);
+            } catch (IOException e) {
+                System.out.println("> Error while handling the message.");
+            }
 
             acceptor.complete(message);
         }).thenCompose(r -> read());

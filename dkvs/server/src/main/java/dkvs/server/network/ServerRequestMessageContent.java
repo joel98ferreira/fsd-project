@@ -2,7 +2,7 @@ package dkvs.server.network;
 
 import dkvs.server.identity.ServerId;
 
-public class ServerRequestMessageContent {
+public class ServerRequestMessageContent implements Comparable<ServerRequestMessageContent> {
 
     // Server Id of the server who is sending the request
     private final ServerId serverId;
@@ -29,5 +29,14 @@ public class ServerRequestMessageContent {
 
     public Object getContent() {
         return object;
+    }
+
+    @Override
+    public int compareTo(ServerRequestMessageContent msg) {
+        int cmp = this.logicalClock.compareTo(msg.logicalClock);
+        if (cmp == 0) {
+            cmp = this.serverId.compareTo(msg.serverId);
+        }
+        return cmp;
     }
 }

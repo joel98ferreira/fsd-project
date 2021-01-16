@@ -55,6 +55,11 @@ public class ScalarLogicalClock implements Comparable<ScalarLogicalClock>{
         return Integer.compare(logicalClock.counter, this.counter);
     }
 
+    @Override
+    public String toString() {
+        return "" + counter;
+    }
+
     /**
      * Represents the possible scalar logical clocks events.
      */
